@@ -170,4 +170,6 @@ Then edit `secrets.h` with your own values:
 
 ## 📝 License
 
-GPL — by **tonikelope**.
+Licensed under the **GNU General Public License v3.0** — see [LICENSE](LICENSE).
+
+Copyright © tonikelope
