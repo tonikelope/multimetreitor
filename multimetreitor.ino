@@ -1723,6 +1723,28 @@ void setupWeb() {
   });
 
   server.on("/consumo", handleConsumo);
+
+  // Maintenance: correct the period label (month/year) and optional reset timestamp
+  // WITHOUT touching energy or history. e.g. /fix_period?m=5&y=2026&reset=1777586400
+  server.on("/fix_period", []() {
+    if (server.hasArg("m")) {
+      int m = server.arg("m").toInt();
+      if (m >= 1 && m <= 12) config.currentMonth = (uint8_t)m;
+    }
+    if (server.hasArg("y")) {
+      int y = server.arg("y").toInt();
+      if (y >= 2020 && y <= 2099) config.currentYear = (uint16_t)y;
+    }
+    if (server.hasArg("reset")) {
+      config.lastEnergyReset = (time_t)strtoul(server.arg("reset").c_str(), nullptr, 10);
+    }
+    saveConfig();  // force persist
+    char out[96];
+    snprintf(out, sizeof(out), "OK m=%u y=%u reset=%ld",
+             (unsigned)config.currentMonth, (unsigned)config.currentYear, (long)config.lastEnergyReset);
+    server.send(200, "text/plain", out);
+  });
+
   server.begin();
 }
 
@@ -1765,7 +1787,7 @@ void handleMonthChange() {
     config.currentMonth = newM;
     config.currentYear = newY;
     config.lastEnergyReset = now;
-    safeBackgroundSaveConfig(); // Use safe background save
+    saveConfig(); // force-persist month change (rare event, must survive reboot)
     return;
   }
 
@@ -1777,7 +1799,7 @@ void handleMonthChange() {
     pzem.resetEnergy();
     energy = 0;
     config.lastEnergyReset = now;
-    safeBackgroundSaveConfig(); // Use safe background save
+    saveConfig(); // force-persist month change (rare event, must survive reboot)
   }
 }
 
