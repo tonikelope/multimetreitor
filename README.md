@@ -15,6 +15,7 @@ It ships with a **web configuration panel** served by the device itself and a **
 - 🚨 **Configurable alerts**: ICP, overvoltage, undervoltage and consumption (by amperes or watts), with an optional **buzzer**.
 - 🖥️ **16×2 I2C LCD** with metrics selectable through a bitmask plus WiFi/MQTT status indicators.
 - 🌐 **Responsive web panel** (HTML embedded in `PROGMEM`) to configure everything without recompiling.
+- 🌍 **Bilingual UI (Spanish / English)** in both the web panel and the Rainmeter skin, with a one-click toggle. Default is Spanish.
 - 📡 **MQTT publishing** with a unified JSON payload and *retained* messages.
 - 🗓️ **Monthly consumption history** (24 months) with automatic energy reset on month change, persisted to EEPROM.
 - 🕐 **NTP synchronization** with the Spanish mainland timezone (CET/CEST with automatic DST changes).
@@ -115,6 +116,7 @@ It ships with a **web configuration panel** served by the device itself and a **
 - **Visual warnings**: red background on *Current* when it exceeds 30 A, and an ICP bar proportional to the thermal load (width = `ICP × 2.5`).
 - Automatically fixes locale decimals (comma → dot) and the connection status for internal calculations (`Substitute`).
 - Includes optional support for a **water heater** (`calentador_estado`, `calentador_corriente`) that lights up red when it is off.
+- **Bilingual labels (ES/EN)** — click the language button (top-right of the skin) to switch; the choice is saved in the `Language` variable (see [Languages](#-languages-es--en)).
 
 ### Installing the skin
 
@@ -127,6 +129,22 @@ It ships with a **web configuration panel** served by the device itself and a **
 5. Load the skin from Rainmeter (*Refresh all* / *Manage*).
 
 > ℹ️ By default the `.ini` ships with `MQTT_TOPIC=rainmeter/multimetreitor`; change it to the topic the firmware actually publishes (`electricidad/casa/estado`) or adapt the topic on the device.
+
+---
+
+## 🌍 Languages (ES / EN)
+
+Both UIs are bilingual and **default to Spanish**. Only the labels/UI text are translated — the metric values and units (V, A, W…) are language-neutral.
+
+### Web panel
+- Click the **`EN` / `ES` button** at the top-right of the page to switch language instantly (client-side, no reload).
+- The choice is remembered per browser via `localStorage` (`mmt_lang`).
+- To add or tweak strings, edit the `I18N = { es: {…}, en: {…} }` dictionary in the embedded `<script>` of `multimetreitor.ino`. Translatable elements are marked with `data-i18n="key"`.
+
+### Rainmeter skin
+- Click the **language button** at the top-right of the skin to toggle ES ⇄ EN. The choice is persisted to the `Language` variable in the `.ini` (`!WriteKeyValue` + `!Refresh`).
+- This uses Rainmeter's standard localization pattern: a `Language` variable in `[Variables]` plus `@Include=#@#Lang_#Language#.inc`.
+- Translations live in `Rainmeter/Multimetreitor/@Resources/Lang_ES.inc` and `Lang_EN.inc`. To change the default, set `Language=ES` (or `EN`) in `[Variables]`.
 
 ---
 
