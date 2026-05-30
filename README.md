@@ -22,6 +22,12 @@ It ships with a **web configuration panel** served by the device itself and a **
 - 🔄 **OTA updates** (Over-The-Air), password protected.
 - 💾 **EEPROM persistence** with integrity validation (magic + version) and wear protection (1-hour write cooldown for automatic tasks).
 
+<div align="center">
+  <img src="docs/web_ui_en_mobile.png" alt="MULTIMETREITOR web configuration panel (mobile, English)" width="300">
+  <br>
+  <em>Web configuration panel — mobile view (English)</em>
+</div>
+
 ---
 
 ## 🔌 Hardware
