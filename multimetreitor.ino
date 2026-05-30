@@ -998,6 +998,10 @@ void computeICP() {
   }
 
   const float seg[7] = { 1.13f, 1.30f, 1.45f, 1.60f, 1.75f, 2.00f, 2.15f };
+  // Effective trip time at the 2.15x endpoint: a small non-zero floor so the
+  // last segment interpolates logarithmically like the others (>= 2.15x is an
+  // instant trip, already handled above).
+  const float ICP_TRIP_FLOOR_S = 0.1f;
   float t_salto = 0.0f;
 
   if (mult < 1.13f) {
@@ -1007,7 +1011,7 @@ void computeICP() {
       if (mult < seg[i + 1]) {
         float x0 = seg[i], x1 = seg[i + 1];
         float y0 = (float)config.icpCurveTimes[i];
-        float y1 = (i < 5) ? (float)config.icpCurveTimes[i + 1] : 0.0f;
+        float y1 = (i < 5) ? (float)config.icpCurveTimes[i + 1] : ICP_TRIP_FLOOR_S;
         if (x1 == x0) t_salto = y0;
         else if (y0 > 0 && y1 > 0) {
           float logy0 = log10f(y0), logy1 = log10f(y1);
