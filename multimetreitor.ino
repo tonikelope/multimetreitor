@@ -380,6 +380,7 @@ IPAddress dns(192, 168, 1, 1);
 // ================== TIMINGS ======================
 #define WIFI_RETRY_INTERVAL_MS 10000
 #define WIFI_COOLDOWN_INTERVAL_MS 30000
+#define WIFI_SETUP_TIMEOUT_MS 20000UL  // per-phase boot connect wait (static, then DHCP); loop() keeps retrying after
 #define ICP_RECOVER_TIMEOUT_MS 20000
 #define NTP_WAIT_TIMEOUT_MS 30000
 #define NTP_RESYNC_INTERVAL_MS 86400000UL
@@ -433,6 +434,7 @@ static const int MIN_ICP_UMBRAL = 10, MAX_ICP_UMBRAL = 100;
 static const int MIN_ICP_COOLDOWN_S = 60, MAX_ICP_COOLDOWN_S = 7200;
 static const int MIN_CURVE_TIME_S = 1, MAX_CURVE_TIME_S = 7200;
 static const float MIN_VOLTAGE_LIMIT = 0.0f, MAX_VOLTAGE_LIMIT = 300.0f;
+static const float MAX_CONSUMO_VAL = 10000.0f;
 
 // ================== MQTT TOPICS =================
 #define MQTT_TOPIC_STATE "electricidad/casa/estado"
@@ -536,6 +538,7 @@ PubSubClient mqttClient(espClient);
 
 // ================== UTILS =====================
 time_t getCurrentEpoch();  // fwd
+static void formatElapsedTimeTo(char* buf, size_t n, time_t timestamp);  // fwd
 
 template<size_t N>
 inline void safeCopy(char (&dst)[N], const String& src) {
@@ -543,17 +546,11 @@ inline void safeCopy(char (&dst)[N], const String& src) {
   dst[N - 1] = '\0';
 }
 
+// Single source of truth for elapsed-time text (Spanish), shared with /json.
 String formatElapsedTime(time_t timestamp) {
-  if (timestamp <= 0) return "Desconocido";
-  if (!ntpOK || ntpEpoch == -1) return "Desconocido";
-
-  time_t now = getCurrentEpoch();
-  if (now <= timestamp) return "Recien";
-  time_t diff = now - timestamp;
-  if (diff < 60) return String(diff) + " seconds";
-  if (diff < 3600) return String(diff / 60) + " minutes";
-  if (diff < 86400) return String(diff / 3600) + " hours";
-  return String(diff / 86400) + " days";
+  char buf[32];
+  formatElapsedTimeTo(buf, sizeof(buf), timestamp);
+  return String(buf);
 }
 
 void logMessage(const String& msg) {
@@ -638,34 +635,49 @@ void loadConfig() {
 }
 
 // ================== WIFI =======================
+// Blocks at most timeoutMs waiting for a connection; returns whether it connected.
+static bool waitWiFiConnected(unsigned long timeoutMs) {
+  unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED) {
+    if (millis() - start > timeoutMs) return false;
+    delay(50);
+    yield();
+  }
+  return true;
+}
+
 void setupWiFi() {
   WiFi.mode(WIFI_STA);
   WiFi.hostname(WIFI_HOSTNAME);
-  WiFi.config(local_ip, gateway, subnet, dns);
   wifiTries = 0;
   wifiOk = false;
+
+  // 1) Try with the configured static IP first.
+  WiFi.config(local_ip, gateway, subnet, dns);
   WiFi.begin(ssid, password);
   lastWiFiAttempt = millis();
-
-  while (WiFi.status() != WL_CONNECTED) {
-    unsigned long now = millis();
-    if (wifiTries < 3 && (now - lastWiFiAttempt) > WIFI_RETRY_INTERVAL_MS) {
-      wifiTries++;
-      WiFi.disconnect();
-      WiFi.begin(ssid, password);
-      lastWiFiAttempt = now;
-      Serial.printf_P(PSTR("[WiFi] Attempt %d to connect to %s\n"), wifiTries, ssid);
-    }
-    if (wifiTries >= 3 && (now - lastWiFiAttempt) > WIFI_COOLDOWN_INTERVAL_MS) {
-      wifiTries = 0;
-      lastWiFiAttempt = now;
-      Serial.println(F("[WiFi] Cooldown elapsed, retrying..."));
-    }
-    delay(20);
+  if (waitWiFiConnected(WIFI_SETUP_TIMEOUT_MS)) {
+    wifiOk = true;
+    Serial.println(F("[WiFi] Connected (static IP)."));
+    return;
   }
-  wifiOk = true;
-  wifiTries = 0;
-  Serial.println(F("[WiFi] Connected."));
+
+  // 2) Fall back to DHCP (e.g. moved to a different network/subnet).
+  Serial.println(F("[WiFi] Static IP failed; trying DHCP..."));
+  WiFi.disconnect();
+  WiFi.config(IPAddress(0, 0, 0, 0), IPAddress(0, 0, 0, 0), IPAddress(0, 0, 0, 0));
+  WiFi.begin(ssid, password);
+  lastWiFiAttempt = millis();
+  if (waitWiFiConnected(WIFI_SETUP_TIMEOUT_MS)) {
+    wifiOk = true;
+    Serial.println(F("[WiFi] Connected (DHCP)."));
+    return;
+  }
+
+  // 3) Do not block the boot any longer: keepWifiAlive() keeps retrying in
+  //    loop(), so the web server / OTA still come up once WiFi is back.
+  wifiOk = false;
+  Serial.println(F("[WiFi] Not connected; continuing boot, will keep retrying in loop()."));
 }
 
 void keepWifiAlive() {
@@ -700,7 +712,8 @@ void setupOTA() {
     Serial.println(F("\n[OTA] End"));
   });
   ArduinoOTA.onProgress([](unsigned int p, unsigned int t) {
-    Serial.printf_P(PSTR("[OTA] Progress: %u%%\r"), (p / (t / 100)));
+    unsigned int pct = (t > 0) ? (unsigned int)(((unsigned long)p * 100UL) / t) : 0;
+    Serial.printf_P(PSTR("[OTA] Progress: %u%%\r"), pct);
   });
   ArduinoOTA.onError([](ota_error_t e) {
     Serial.printf_P(PSTR("[OTA] Error[%u]\n"), e);
@@ -852,6 +865,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 void setupMQTT() {
   mqttClient.setServer(config.mqttBroker, 1883);
   mqttClient.setCallback(mqttCallback);
+  mqttClient.setBufferSize(512);  // state JSON payload can exceed the 256-byte default
 
   const int MAX_TRIES = 5;
   for (int i = 0; i < MAX_TRIES; ++i) {
@@ -1312,19 +1326,25 @@ void handleConfigPost() {
     config.consumoEnAmperios = (server.arg("consumoTipo") == "amperios");
   if (server.hasArg("consumoValor")) {
     float v = server.arg("consumoValor").toFloat();
-    config.consumoValor = (v > 0) ? v : 0;
+    if (v < 0) v = 0;
+    else if (v > MAX_CONSUMO_VAL) v = MAX_CONSUMO_VAL;
+    config.consumoValor = v;
   }
 
   config.sobretensionEnabled = server.hasArg("sobretensionEnabled");
   if (server.hasArg("sobretensionValor")) {
     float v = server.arg("sobretensionValor").toFloat();
-    config.sobretensionValor = (v > 0) ? v : 0;
+    if (v < 0) v = 0;
+    else if (v > MAX_VOLTAGE_LIMIT) v = MAX_VOLTAGE_LIMIT;
+    config.sobretensionValor = v;
   }
 
   config.subtensionEnabled = server.hasArg("subtensionEnabled");
   if (server.hasArg("subtensionValor")) {
     float v = server.arg("subtensionValor").toFloat();
-    config.subtensionValor = (v > 0) ? v : 0;
+    if (v < 0) v = 0;
+    else if (v > MAX_VOLTAGE_LIMIT) v = MAX_VOLTAGE_LIMIT;
+    config.subtensionValor = v;
   }
 
   saveConfig();
@@ -1629,20 +1649,27 @@ void setupWeb() {
 // ================== HISTORY ===================
 void guardarMesActual() {
   if (config.currentMonth != 0 && config.currentYear != 0) {
+    // Avoid corrupting history with a failed (NaN) reading; try a fresh read first.
+    float e = energy;
+    if (isnan(e)) e = pzem.energy();
+    if (isnan(e)) {
+      logMessage(F("[HIST] Skipped save: energy reading invalid (NaN)."));
+      return;
+    }
     bool found = false;
     for (int i = 0; i < 24; i++) {
       if (config.monthlyHistory[i].month == config.currentMonth && config.monthlyHistory[i].year == config.currentYear) {
-        config.monthlyHistory[i].energy_kWh = energy;
+        config.monthlyHistory[i].energy_kWh = e;
         found = true;
         break;
       }
     }
     if (!found) {
-      config.monthlyHistory[config.historyIndex] = { config.currentMonth, config.currentYear, energy };
+      config.monthlyHistory[config.historyIndex] = { config.currentMonth, config.currentYear, e };
       config.historyIndex = (config.historyIndex + 1) % 24;
     }
-    safeBackgroundSaveConfig(); // Use safe background save
-    logMessage(String(F("[HIST] Saved ")) + String(config.currentMonth) + "/" + String(config.currentYear) + " = " + String(energy, 2) + " kWh");
+    safeBackgroundSaveConfig();
+    logMessage(String(F("[HIST] Saved ")) + String(config.currentMonth) + "/" + String(config.currentYear) + " = " + String(e, 2) + " kWh");
   }
 }
 
