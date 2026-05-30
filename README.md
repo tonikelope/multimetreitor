@@ -4,8 +4,6 @@ Home electrical consumption monitor based on the **ESP8266** and the **PZEM-004T
 
 It ships with a **web configuration panel** served by the device itself and a **Rainmeter skin** to display the metrics on the Windows desktop.
 
-> by **tonikelope**
-
 ---
 
 ## ✨ Features
@@ -66,20 +64,6 @@ It ships with a **web configuration panel** served by the device itself and a **
 - **LCD** (`composeLCDLines`) — composes two 16-character lines with the active metrics.
 - **Web server** — configuration panel + JSON endpoints.
 - **History** — monthly consumption management and month-change handling.
-
-### Web endpoints
-
-| Route           | Method | Description                                      |
-|-----------------|--------|--------------------------------------------------|
-| `/`             | GET    | Configuration panel (HTML)                       |
-| `/`             | POST   | Save configuration                               |
-| `/json`         | GET    | Full state as JSON                               |
-| `/json_lcd`     | GET    | Current contents of the 2 LCD lines              |
-| `/mqtt_status`  | GET    | MQTT connection status (`{"ok":true/false}`)     |
-| `/last_reset`   | GET    | Time elapsed since the last energy reset         |
-| `/consumo`      | GET    | Monthly consumption history (JSON, *chunked*)    |
-| `/reset`        | GET    | Restarts the device                              |
-| `/wipe_eeprom`  | GET    | Wipes the EEPROM (preserves the consumption history) |
 
 ### MQTT topics
 
