@@ -287,7 +287,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         wipingEeprom:"Wiping EEPROM...", resettingDevice:"Restarting device...", checkNumbers:"Please check the numeric values."
       }
     };
-    function applyLang(lang){
+    window.applyLang = function(lang){
       if(!I18N[lang]) lang='es';
       var d = I18N[lang];
       var els = document.querySelectorAll('[data-i18n]');
@@ -301,7 +301,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       CURRENT_LANG = lang;
       document.documentElement.lang = lang;
       try { localStorage.setItem('mmt_lang', lang); } catch(e){}
-    }
+    };
     window.toggleLang = function(){ applyLang(CURRENT_LANG==='es'?'en':'es'); };
     document.addEventListener('DOMContentLoaded', function() {
       var _saved=null; try{ _saved=localStorage.getItem('mmt_lang'); }catch(e){}
