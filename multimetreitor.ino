@@ -139,7 +139,8 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
   </style>
 </head>
 <body>
-  <div class='main'>
+  <div class='main' style="position:relative;">
+    <button type="button" id="langBtn" onclick="toggleLang()" title="Language / Idioma" style="position:absolute;right:14px;top:14px;background:#eef;border:1px solid #ccd;border-radius:6px;padding:3px 10px;font-size:0.9em;cursor:pointer;">EN</button>
     <h1>MULTIMETREITOR</h1>
     <div class="byline">by tonikelope</div>
     <div class="lcd-sim" id="lcd-sim">
@@ -149,17 +150,17 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
     </div>
     <form method='POST' onsubmit="return validateForm();">
       <div class='mqtt-section'>
-        <h2>Broker MQTT</h2>
-        <label>IP o nombre del broker MQTT:
+        <h2 data-i18n="mqttBroker">Broker MQTT</h2>
+        <label><span data-i18n="brokerIp">IP o nombre del broker MQTT:</span>
           <input type="text" name="mqtt_broker" value="%MQTT_BROKER%" pattern=".{7,31}" required style="width:190px;">
           <span id="mqtt-status">%MQTT_STATUS%</span>
         </label>
-        <div class="desc">Nombre cliente MQTT:
+        <div class="desc"><span data-i18n="clientName">Nombre cliente MQTT:</span>
           <input type="text" name="mqtt_client" value="%MQTT_CLIENT%" maxlength="31" required style="width:150px;">
         </div>
-        <div class="desc">Intervalo refresco (ms): <input type="number" min="1000" max="60000" step="500" name="refresh_interval" value="%REFRESH_INTERVAL%" required></div>
+        <div class="desc"><span data-i18n="refreshInterval">Intervalo refresco (ms):</span> <input type="number" min="1000" max="60000" step="500" name="refresh_interval" value="%REFRESH_INTERVAL%" required></div>
         <div class="topics-list">
-        <b>Topics donde se publica:</b>
+        <b data-i18n="topicsPublished">Topics donde se publica:</b>
         <ul style="margin:0 0 0 16px;padding:0;">
           <li>electricidad/casa/estado</li>
         </ul>
@@ -170,45 +171,45 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       </div>
       </div>
       <div class='section'>
-        <h2>Alertas</h2>
+        <h2 data-i18n="alerts">Alertas</h2>
         <div class="alert-row">
-          <label><input type="checkbox" name="alertaSonora" %ALERTA_SONORA%> Alerta sonora (buzzer)</label>
+          <label><input type="checkbox" name="alertaSonora" %ALERTA_SONORA%> <span data-i18n="soundAlert">Alerta sonora (buzzer)</span></label>
         </div>
         <div class="icp-group">
-          <span class="icp-label">Alerta ICP térmico</span><br>
+          <span class="icp-label" data-i18n="icpThermalAlert">Alerta ICP térmico</span><br>
           <div class="icp-row">
-            <label><input type="checkbox" name="icpEnabled" %ICP_ENABLED%> Activar alerta ICP</label>
+            <label><input type="checkbox" name="icpEnabled" %ICP_ENABLED%> <span data-i18n="enableIcp">Activar alerta ICP</span></label>
           </div>
           <div class="icp-row">
-            Intensidad nominal: <input type="number" step="0.1" min="5" max="80" name="icpNominal" value="%ICP_NOMINAL%"> A
+            <span data-i18n="nominalCurrent">Intensidad nominal:</span> <input type="number" step="0.1" min="5" max="80" name="icpNominal" value="%ICP_NOMINAL%"> A
           </div>
           <div class="icp-row">
-            Umbral de calor:
+            <span data-i18n="heatThreshold">Umbral de calor:</span>
             <input type="range" min="10" max="100" step="1" name="icpUmbral" value="%ICP_UMBRAL%" id="icpUmbralSlider" oninput="icpUmbralVal.value=value">
             <output id="icpUmbralVal">%ICP_UMBRAL%%</output>
           </div>
-          <button type="button" onclick="toggleCurve()" class="icp-curve-box-btn">Ajustar curva de disparo</button>
+          <button type="button" onclick="toggleCurve()" class="icp-curve-box-btn" data-i18n="adjustCurve">Ajustar curva de disparo</button>
           <div id="icp-curve-box" style="display:none;margin-top:13px;">
             <table class="icp-curve-table">
-              <tr><th>Relación I/N</th><th>Tiempo de salto (s)</th></tr>
+              <tr><th data-i18n="ratioIN">Relación I/N</th><th data-i18n="tripTime">Tiempo de salto (s)</th></tr>
               <tr><td>1.13</td><td><input type="number" name="icpCurve0" id="icpCurve0" min="1" max="7200" step="1" value="%CURVE0%"></td></tr>
               <tr><td>1.30</td><td><input type="number" name="icpCurve1" id="icpCurve1" min="1" max="7200" step="1" value="%CURVE1%"></td></tr>
               <tr><td>1.45</td><td><input type="number" name="icpCurve2" id="icpCurve2" min="1" max="7200" step="1" value="%CURVE2%"></td></tr>
               <tr><td>1.60</td><td><input type="number" name="icpCurve3" id="icpCurve3" min="1" max="7200" step="1" value="%CURVE3%"></td></tr>
               <tr><td>1.75</td><td><input type="number" name="icpCurve4" id="icpCurve4" min="1" max="7200" step="1" value="%CURVE4%"></td></tr>
               <tr><td>2.00</td><td><input type="number" name="icpCurve5" id="icpCurve5" min="1" max="7200" step="1" value="%CURVE5%"></td></tr>
-              <tr><td>2.15</td><td><input type="text" value="0 (inmediato)" readonly style="background:#eee;color:#999;border:none;text-align:center;"></td></tr>
+              <tr><td>2.15</td><td><input type="text" id="icpInstant" value="0 (inmediato)" readonly style="background:#eee;color:#999;border:none;text-align:center;"></td></tr>
             </table>
             <div style="margin-top:12px;">
-              <label><b>Enfriamiento:</b> Tiempo para bajar de 100% a 0% (segundos):
+              <label><b data-i18n="cooldown">Enfriamiento:</b> <span data-i18n="cooldownDesc">Tiempo para bajar de 100% a 0% (segundos):</span>
                 <input type="number" name="icpCooldown" id="icpCooldown" min="60" max="7200" value="%COOLDOWN%" style="width:80px;">
               </label>
             </div>
-            <button type="button" onclick="restaurarCurva()" class="icp-curve-box-btn" style="background:#2b4;margin-top:13px;">Restaurar valores por defecto</button>
+            <button type="button" onclick="restaurarCurva()" class="icp-curve-box-btn" style="background:#2b4;margin-top:13px;" data-i18n="restoreDefaults">Restaurar valores por defecto</button>
           </div>
         </div>
         <div class="consumo-row">
-          <label><input type='checkbox' name='consumoEnabled' %CONSUMO_ENABLED%> Alerta por <b>corriente/potencia</b></label>
+          <label><input type='checkbox' name='consumoEnabled' %CONSUMO_ENABLED%> <span data-i18n="currentPowerAlert">Alerta por <b>corriente/potencia</b></span></label>
           <span class="consumo-unidad">
             <input type='radio' name='consumoTipo' value='amperios' %CONSUMO_A%>A
             <input type='radio' name='consumoTipo' value='watios' %CONSUMO_W%>W
@@ -216,40 +217,95 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
           </span>
         </div>
         <div class='alert-row'>
-          <label><input type='checkbox' name='sobretensionEnabled' %SOBRE_ENABLED%> Alerta por <b>sobretensión</b></label>
+          <label><input type='checkbox' name='sobretensionEnabled' %SOBRE_ENABLED%> <span data-i18n="overvoltageAlert">Alerta por <b>sobretensión</b></span></label>
           <input type='number' step='0.1' min='0' max='300' name='sobretensionValor' value='%SOBRE_VALOR%' required>
           <span class="unit">V</span>
         </div>
         <div class='alert-row'>
-          <label><input type='checkbox' name='subtensionEnabled' %SUB_ENABLED%> Alerta por <b>subtensión</b></label>
+          <label><input type='checkbox' name='subtensionEnabled' %SUB_ENABLED%> <span data-i18n="undervoltageAlert">Alerta por <b>subtensión</b></span></label>
           <input type='number' step='0.1' min='0' max='300' name='subtensionValor' value='%SUB_VALOR%' required>
           <span class="unit">V</span>
         </div>
       </div>
       <div class='section'>
         <h2>LCD</h2>
-        <div class="desc">Selecciona qué métricas quieres mostrar en pantalla:</div>
+        <div class="desc" data-i18n="selectMetrics">Selecciona qué métricas quieres mostrar en pantalla:</div>
         <div class="lcd-row-metrics">
-          <label><input type='checkbox' name='lcd_v' %LCD_VOLT%>Voltaje</label>
-          <label><input type='checkbox' name='lcd_f' %LCD_FREQ%>Frecuencia</label>
-          <label><input type='checkbox' name='lcd_i' %LCD_CURR%>Corriente</label>
-          <label><input type='checkbox' name='lcd_p' %LCD_POWR%>Potencia</label>
-          <label><input type='checkbox' name='lcd_e' %LCD_ENER%>Energía</label>
-          <label><input type='checkbox' name='lcd_pf' %LCD_PF%>Factor Potencia</label>
-          <label><input type='checkbox' name='lcd_icp' %LCD_ICP%>ICP</label>
+          <label><input type='checkbox' name='lcd_v' %LCD_VOLT%><span data-i18n="voltage">Voltaje</span></label>
+          <label><input type='checkbox' name='lcd_f' %LCD_FREQ%><span data-i18n="frequency">Frecuencia</span></label>
+          <label><input type='checkbox' name='lcd_i' %LCD_CURR%><span data-i18n="current">Corriente</span></label>
+          <label><input type='checkbox' name='lcd_p' %LCD_POWR%><span data-i18n="power">Potencia</span></label>
+          <label><input type='checkbox' name='lcd_e' %LCD_ENER%><span data-i18n="energy">Energía</span></label>
+          <label><input type='checkbox' name='lcd_pf' %LCD_PF%><span data-i18n="powerFactor">Factor Potencia</span></label>
+          <label><input type='checkbox' name='lcd_icp' %LCD_ICP%><span data-i18n="icp">ICP</span></label>
         </div>
       </div>
-      <div class="desc"><a href="/consumo" target="_blank" style="color: #1e90ff; text-decoration: none; font-weight: bold;">Ver Historial de Consumo</a></div>
-      <div class="desc">Contando energía desde hace: <span id="lastResetTime">%LAST_RESET_TIME%</span></div>
+      <div class="desc"><a href="/consumo" target="_blank" style="color: #1e90ff; text-decoration: none; font-weight: bold;" data-i18n="viewHistory">Ver Historial de Consumo</a></div>
+      <div class="desc"><span data-i18n="countingSince">Contando energía desde hace:</span> <span id="lastResetTime">%LAST_RESET_TIME%</span></div>
       <div class="form-actions">
-        <button type="button" onclick="wipeEEPROM()" class="action-btn eeprom">Borrar memoria</button>
-        <button type="button" onclick="resetDevice()" class="action-btn reset">Resetear dispositivo</button>
-        <input type='submit' value='Guardar cambios'>
+        <button type="button" onclick="wipeEEPROM()" class="action-btn eeprom" data-i18n="wipeMemory">Borrar memoria</button>
+        <button type="button" onclick="resetDevice()" class="action-btn reset" data-i18n="resetDeviceBtn">Resetear dispositivo</button>
+        <input type='submit' id="saveChangesBtn" value='Guardar cambios'>
       </div>
     </form>
   </div>
   <script>
+    var CURRENT_LANG = 'es';
+    var I18N = {
+      es: {
+        mqttBroker:"Broker MQTT", brokerIp:"IP o nombre del broker MQTT:", clientName:"Nombre cliente MQTT:",
+        refreshInterval:"Intervalo refresco (ms):", topicsPublished:"Topics donde se publica:",
+        alerts:"Alertas", soundAlert:"Alerta sonora (buzzer)", icpThermalAlert:"Alerta ICP térmico",
+        enableIcp:"Activar alerta ICP", nominalCurrent:"Intensidad nominal:", heatThreshold:"Umbral de calor:",
+        adjustCurve:"Ajustar curva de disparo", ratioIN:"Relación I/N", tripTime:"Tiempo de salto (s)",
+        instant:"0 (inmediato)", cooldown:"Enfriamiento:", cooldownDesc:"Tiempo para bajar de 100% a 0% (segundos):",
+        restoreDefaults:"Restaurar valores por defecto", currentPowerAlert:"Alerta por <b>corriente/potencia</b>",
+        overvoltageAlert:"Alerta por <b>sobretensión</b>", undervoltageAlert:"Alerta por <b>subtensión</b>",
+        selectMetrics:"Selecciona qué métricas quieres mostrar en pantalla:", voltage:"Voltaje",
+        frequency:"Frecuencia", current:"Corriente", power:"Potencia", energy:"Energía",
+        powerFactor:"Factor Potencia", icp:"ICP", viewHistory:"Ver Historial de Consumo",
+        countingSince:"Contando energía desde hace:", wipeMemory:"Borrar memoria", resetDeviceBtn:"Resetear dispositivo",
+        saveChanges:"Guardar cambios", connected:"(CONECTADO)", disconnected:"(NO CONECTADO)",
+        confirmWipe:"¿Seguro que quieres borrar por completo la EEPROM?\nEsto restaurará todos los valores de fábrica y perderás la configuración.",
+        wipingEeprom:"Borrando EEPROM...", resettingDevice:"Reiniciando dispositivo...", checkNumbers:"Revisa los valores numéricos."
+      },
+      en: {
+        mqttBroker:"MQTT Broker", brokerIp:"MQTT broker IP or hostname:", clientName:"MQTT client name:",
+        refreshInterval:"Refresh interval (ms):", topicsPublished:"Topics published to:",
+        alerts:"Alerts", soundAlert:"Sound alert (buzzer)", icpThermalAlert:"Thermal ICP alert",
+        enableIcp:"Enable ICP alert", nominalCurrent:"Nominal current:", heatThreshold:"Heat threshold:",
+        adjustCurve:"Adjust trip curve", ratioIN:"I/N ratio", tripTime:"Trip time (s)",
+        instant:"0 (instant)", cooldown:"Cooldown:", cooldownDesc:"Time to go from 100% to 0% (seconds):",
+        restoreDefaults:"Restore defaults", currentPowerAlert:"<b>Current/power</b> alert",
+        overvoltageAlert:"<b>Overvoltage</b> alert", undervoltageAlert:"<b>Undervoltage</b> alert",
+        selectMetrics:"Select which metrics to show on the display:", voltage:"Voltage",
+        frequency:"Frequency", current:"Current", power:"Power", energy:"Energy",
+        powerFactor:"Power Factor", icp:"ICP", viewHistory:"View Consumption History",
+        countingSince:"Counting energy since:", wipeMemory:"Wipe memory", resetDeviceBtn:"Reset device",
+        saveChanges:"Save changes", connected:"(CONNECTED)", disconnected:"(NOT CONNECTED)",
+        confirmWipe:"Are you sure you want to completely wipe the EEPROM?\nThis will restore all factory defaults and you will lose the configuration.",
+        wipingEeprom:"Wiping EEPROM...", resettingDevice:"Restarting device...", checkNumbers:"Please check the numeric values."
+      }
+    };
+    function applyLang(lang){
+      if(!I18N[lang]) lang='es';
+      var d = I18N[lang];
+      var els = document.querySelectorAll('[data-i18n]');
+      for (var i=0;i<els.length;i++){
+        var k = els[i].getAttribute('data-i18n');
+        if (d[k] !== undefined) els[i].innerHTML = d[k];
+      }
+      var sc = document.getElementById('saveChangesBtn'); if(sc) sc.value = d.saveChanges;
+      var inst = document.getElementById('icpInstant'); if(inst) inst.value = d.instant;
+      var lb = document.getElementById('langBtn'); if(lb) lb.textContent = (lang==='es'?'EN':'ES');
+      CURRENT_LANG = lang;
+      document.documentElement.lang = lang;
+      try { localStorage.setItem('mmt_lang', lang); } catch(e){}
+    }
+    window.toggleLang = function(){ applyLang(CURRENT_LANG==='es'?'en':'es'); };
     document.addEventListener('DOMContentLoaded', function() {
+      var _saved=null; try{ _saved=localStorage.getItem('mmt_lang'); }catch(e){}
+      applyLang(_saved==='en'?'en':'es');
        function updateLastResetTime() {
         fetch('/last_reset')
           .then(r => r.text())
@@ -304,19 +360,17 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       function updateMqttStatus() {
         fetch('/mqtt_status').then(r=>r.json()).then(j=>{
           let el = document.getElementById('mqtt-status');
-          if(j.ok) {
-            el.innerHTML = '<span class="mqtt-status mqtt-ok">(CONECTADO)</span>';
-          } else {
-            el.innerHTML = '<span class="mqtt-status mqtt-fail">(NO CONECTADO)</span>';
-          }
+          var cls = j.ok ? 'mqtt-ok' : 'mqtt-fail';
+          var txt = I18N[CURRENT_LANG][j.ok ? 'connected' : 'disconnected'];
+          el.innerHTML = '<span class="mqtt-status ' + cls + '">' + txt + '</span>';
         });
       }
       setInterval(updateMqttStatus, 1000);
       updateMqttStatus();
 
       window.wipeEEPROM = function() {
-        if(confirm("¿Seguro que quieres borrar por completo la EEPROM?\nEsto restaurará todos los valores de fábrica y perderás la configuración.")) {
-            document.body.innerHTML = "<div style='margin-top:60px;text-align:center;font-family:sans-serif'><div class='loader'></div><h2>Borrando EEPROM...</h2></div>";
+        if(confirm(I18N[CURRENT_LANG].confirmWipe)) {
+            document.body.innerHTML = "<div style='margin-top:60px;text-align:center;font-family:sans-serif'><div class='loader'></div><h2>" + I18N[CURRENT_LANG].wipingEeprom + "</h2></div>";
             fetch('/wipe_eeprom').then(_ => {
                 const poll = setInterval(() => {
                     fetch('/json').then(r => {
@@ -335,7 +389,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
     };
 
     window.resetDevice = function() {
-        document.body.innerHTML = "<div style='margin-top:60px;text-align:center;font-family:sans-serif'><div class='loader'></div><h2>Reiniciando dispositivo...</h2></div>";
+        document.body.innerHTML = "<div style='margin-top:60px;text-align:center;font-family:sans-serif'><div class='loader'></div><h2>" + I18N[CURRENT_LANG].resettingDevice + "</h2></div>";
         fetch('/reset').then(_ => {
             const poll = setInterval(() => {
                 fetch('/json').then(r => {
@@ -355,7 +409,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         let nums = document.querySelectorAll('input[type=number]');
         for (let i = 0; i < nums.length; ++i) {
           let n = nums[i].value;
-          if(n === "" || isNaN(n) || Number(n)<0) { alert("Revisa los valores numéricos."); return false;}
+          if(n === "" || isNaN(n) || Number(n)<0) { alert(I18N[CURRENT_LANG].checkNumbers); return false;}
         }
         return true;
       };
