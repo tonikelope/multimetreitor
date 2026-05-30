@@ -981,6 +981,14 @@ void computeICP() {
   float dt = (now - lastIcpMillis) / 1000.0f;
   lastIcpMillis = now;
 
+  // Guard against loop stalls (slow web request, reconnects, OTA, NTP resync):
+  // cap dt to ~2x the expected refresh so a delayed cycle cannot cause a
+  // disproportionate jump in icpCarga. Scales with refreshInterval so long
+  // refresh periods keep integrating correctly.
+  float maxDt = 2.0f * (config.refreshInterval / 1000.0f);
+  if (maxDt < 1.0f) maxDt = 1.0f;
+  if (dt > maxDt) dt = maxDt;
+
   float I = isnan(current) ? 0.0f : current;
   float mult = (config.icpNominal > 0) ? (I / config.icpNominal) : 0.0f;
 
@@ -1203,6 +1211,20 @@ void publishAllMQTT() {
   // Send single unified JSON payload to state topic
   if (n > 0 && n < (int)sizeof(payload)) {
     mqttClient.publish(MQTT_TOPIC_STATE, payload, true);
+  }
+
+  // Self-contained ICP persistence: publish a retained recovery message so
+  // icpCarga survives a reboot without any external automation (see recoverICP).
+  // Only with a valid NTP timestamp, because recovery applies cooldown by the
+  // elapsed time since this timestamp. Outside boot we are not subscribed to
+  // this topic, so this never feeds back into mqttCallback().
+  if ((ntpOK && ntpEpoch != -1) && !isnan(icpCarga)) {
+    char icpPayload[64];
+    int m = snprintf(icpPayload, sizeof(icpPayload),
+                     "{\"valor\":%.2f,\"timestamp\":%ld}", icpCarga, ts);
+    if (m > 0 && m < (int)sizeof(icpPayload)) {
+      mqttClient.publish(MQTT_TOPIC_ICP_RECOVERY, icpPayload, true);
+    }
   }
 }
 
