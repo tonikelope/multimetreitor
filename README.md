@@ -113,8 +113,6 @@ It ships with a **web configuration panel** served by the device itself and a **
 
 `Rainmeter/Multimetreitor/` contains a skin that displays the MULTIMETREITOR metrics directly on the Windows desktop, consuming the data over MQTT.
 
-![Rainmeter](Rainmeter/Multimetreitor/@Resources/rayo.png)
-
 **Skin features:**
 
 - Reads from the MQTT broker through Rainmeter's **[MqttClient](https://github.com/anschnapp/MqttPlugin)** plugin and parses the JSON published by the firmware.
