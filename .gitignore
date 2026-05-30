@@ -1,0 +1,7 @@
+# Private credentials — never commit (use secrets.h.example as template)
+secrets.h
+
+# Build artifacts
+build/
+*.bin
+*.elf
