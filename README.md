@@ -186,6 +186,12 @@ Then edit `secrets.h` with your own values:
 
 ---
 
+## 🏠 Network note
+
+MULTIMETREITOR is designed as a **local home-network appliance**: the web panel keeps things fast and simple and is meant to live inside your own trusted Wi‑Fi. As such, **run it on a secure/trusted network and don't expose it directly to the Internet** (no port-forwarding) — that's the intended setup. For multi-user or untrusted environments you can add HTTP Basic Auth to the control endpoints.
+
+---
+
 ## 📝 License
 
 Licensed under the **GNU General Public License v3.0** — see [LICENSE](LICENSE).
