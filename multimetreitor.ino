@@ -1547,23 +1547,23 @@ void handleWipeEEPROM() {
 // Converts lastEnergyReset to human readable text in buf, without using String
 static void formatElapsedTimeTo(char* buf, size_t n, time_t timestamp) {
   if (!buf || n == 0) return;
-  if (timestamp <= 0) { snprintf(buf, n, "%s", "Desconocido"); return; }
+  if (timestamp <= 0) { snprintf(buf, n, "%s", "—"); return; }
 
   extern time_t getCurrentEpoch();  
   extern bool ntpOK;
   extern time_t ntpEpoch;
 
-  if (!ntpOK || ntpEpoch == -1) { snprintf(buf, n, "%s", "Desconocido"); return; }
+  if (!ntpOK || ntpEpoch == -1) { snprintf(buf, n, "%s", "—"); return; }
 
   time_t now = getCurrentEpoch();
-  if (now <= timestamp) { snprintf(buf, n, "%s", "Recién"); return; }
+  if (now <= timestamp) { snprintf(buf, n, "%s", "0s"); return; }
 
   time_t diff = now - timestamp;
-  if (diff < 60)     { snprintf(buf, n, "%ld segundos", (long)diff); return; }
-  if (diff < 3600)   { snprintf(buf, n, "%ld minutos", (long)(diff / 60)); return; }
-  if (diff < 86400)  { snprintf(buf, n, "%ld horas",   (long)(diff / 3600)); return; }
+  if (diff < 60)     { snprintf(buf, n, "%lds", (long)diff); return; }
+  if (diff < 3600)   { snprintf(buf, n, "%ldm", (long)(diff / 60)); return; }
+  if (diff < 86400)  { snprintf(buf, n, "%ldh", (long)(diff / 3600)); return; }
   /* >= 1 day */
-  snprintf(buf, n, "%ld días", (long)(diff / 86400));
+  snprintf(buf, n, "%ldd", (long)(diff / 86400));
 }
 
 // JSON escaping to avoid invalid payloads
