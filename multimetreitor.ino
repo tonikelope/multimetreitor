@@ -1186,8 +1186,52 @@ void showLCDSplash() {
 }
 
 // ================== ALERTS =====================
+// Anti-flapping for the voltage and current/power alerts (ICP is untouched):
+// - Trigger persistence: the reading must stay beyond the configured threshold
+//   for ALERT_TRIGGER_SAMPLES consecutive readings before the alert fires, so
+//   a value that just brushes the limit for an instant does not trigger it.
+// - Hysteresis: once active, the alert only clears when the reading moves back
+//   past the margin, avoiding buzzer chatter when hovering at the threshold.
+static const uint8_t ALERT_TRIGGER_SAMPLES = 3;     // consecutive readings beyond the limit to trigger
+static const float ALERT_HYST_VOLTAGE_V = 2.0f;     // volts beyond the limit to clear over/undervoltage
+static const float ALERT_HYST_CONSUMO_PCT = 0.05f;  // 5% below the limit to clear current/power
+
+// Updates one latched alert. `valid`: alert enabled and reading usable.
+// `trigCond`: reading beyond the threshold. `clearCond`: reading back past the
+// hysteresis margin. Between both bands an active alert stays active.
+static void updateAlertLatch(bool &latch, uint8_t &count, bool valid, bool trigCond, bool clearCond) {
+  if (!valid) { latch = false; count = 0; return; }
+  if (trigCond) {
+    if (!latch && ++count >= ALERT_TRIGGER_SAMPLES) latch = true;
+  } else {
+    count = 0;
+    if (clearCond) latch = false;
+  }
+}
+
 AlertState evaluateAlerts() {
   AlertState st = { false, "", "" };
+
+  // Latched alert states. Updated every cycle, regardless of which alert ends
+  // up being displayed.
+  static bool sobreLatch = false, subLatch = false, consumoLatch = false;
+  static uint8_t sobreCount = 0, subCount = 0, consumoCount = 0;
+
+  updateAlertLatch(sobreLatch, sobreCount,
+                   config.sobretensionEnabled && !isnan(voltage) && config.sobretensionValor > 0,
+                   voltage >= config.sobretensionValor,
+                   voltage < config.sobretensionValor - ALERT_HYST_VOLTAGE_V);
+
+  updateAlertLatch(subLatch, subCount,
+                   config.subtensionEnabled && !isnan(voltage) && config.subtensionValor > 0,
+                   voltage <= config.subtensionValor,
+                   voltage > config.subtensionValor + ALERT_HYST_VOLTAGE_V);
+
+  float consumoVal = config.consumoEnAmperios ? current : power;
+  updateAlertLatch(consumoLatch, consumoCount,
+                   config.consumoEnabled && !isnan(consumoVal) && config.consumoValor > 0,
+                   consumoVal >= config.consumoValor,
+                   consumoVal < config.consumoValor * (1.0f - ALERT_HYST_CONSUMO_PCT));
 
   float mult = (isnan(current) || config.icpNominal <= 0) ? 0 : current / config.icpNominal;
   if (config.icpEnabled && icpCarga >= config.icpUmbral && mult >= 1.13f) {
@@ -1196,31 +1240,24 @@ AlertState evaluateAlerts() {
     snprintf(st.value, sizeof(st.value), "%.2fA %.0f%%", current, icpCarga);
     return st;
   }
-  if (config.sobretensionEnabled && !isnan(voltage) && voltage >= config.sobretensionValor && config.sobretensionValor > 0) {
+  if (sobreLatch) {
     st.any = true;
     snprintf(st.msg, sizeof(st.msg), "OVERVOLT WARN");
     snprintf(st.value, sizeof(st.value), "%.1fV", voltage);
     return st;
   }
-  if (config.subtensionEnabled && !isnan(voltage) && voltage <= config.subtensionValor && config.subtensionValor > 0) {
+  if (subLatch) {
     st.any = true;
     snprintf(st.msg, sizeof(st.msg), "UNDERVOLT WARN");
     snprintf(st.value, sizeof(st.value), "%.1fV", voltage);
     return st;
   }
-  if (config.consumoEnabled) {
-    if (config.consumoEnAmperios && !isnan(current) && current >= config.consumoValor && config.consumoValor > 0) {
-      st.any = true;
-      snprintf(st.msg, sizeof(st.msg), "CONSUMPTION WARN");
-      snprintf(st.value, sizeof(st.value), "%.2fA", current);
-      return st;
-    }
-    if (!config.consumoEnAmperios && !isnan(power) && power >= config.consumoValor && config.consumoValor > 0) {
-      st.any = true;
-      snprintf(st.msg, sizeof(st.msg), "CONSUMPTION WARN");
-      snprintf(st.value, sizeof(st.value), "%.0fW", power);
-      return st;
-    }
+  if (consumoLatch) {
+    st.any = true;
+    snprintf(st.msg, sizeof(st.msg), "CONSUMPTION WARN");
+    if (config.consumoEnAmperios) snprintf(st.value, sizeof(st.value), "%.2fA", current);
+    else                          snprintf(st.value, sizeof(st.value), "%.0fW", power);
+    return st;
   }
   return st;
 }
