@@ -493,6 +493,7 @@ static const float MAX_CONSUMO_VAL = 10000.0f;
 // ================== MQTT TOPICS =================
 #define MQTT_TOPIC_STATE "electricidad/casa/estado"
 #define MQTT_TOPIC_ICP_RECOVERY "electricidad/casa/icp"
+#define MQTT_TOPIC_ALERTS_CONFIG "electricidad/casa/alertas_config"
 #define MQTT_TOPIC_LOG "multimetreitor/serial"
 #define MQTT_TOPIC_STATUS "multimetreitor/status"
 
@@ -541,12 +542,20 @@ struct AlertState {
   bool any;
   char msg[17];
   char value[17];
+  // Individual active-alert flags, exposed as the "alerts" array in /json and MQTT
+  bool icp;
+  bool sobre;
+  bool sub;
+  bool consumo;
 };
 
 // ================== GLOBAL STATE ===============
 AppConfig config;
 
 float voltage = NAN, current = NAN, power = NAN, energy = NAN, powerFactor = NAN, frequency = NAN;
+
+// Last evaluated alert state, so /json and MQTT can report active alerts
+AlertState lastAlert = { false, "", "", false, false, false, false };
 
 float icpCarga = 0.0f;
 unsigned long lastIcpMillis = 0;
@@ -916,6 +925,37 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   }
 }
 
+// Alert configuration JSON (enabled checkbox + configured threshold per
+// alert), shared by /json_alerts and the retained MQTT config topic, so
+// external apps can interpret the "alerts" array in /json and MQTT.
+static int buildAlertsConfigJson(char* out, size_t n) {
+  return snprintf(
+    out, n,
+    "{"
+      "\"sobretension\":{\"enabled\":%s,\"umbral\":%.1f,\"unidad\":\"V\"},"
+      "\"subtension\":{\"enabled\":%s,\"umbral\":%.1f,\"unidad\":\"V\"},"
+      "\"consumo\":{\"enabled\":%s,\"umbral\":%.2f,\"unidad\":\"%s\"},"
+      "\"icp\":{\"enabled\":%s,\"nominal\":%.2f,\"umbral\":%d,\"unidad\":\"%%\"}"
+    "}",
+    config.sobretensionEnabled ? "true" : "false", (double)config.sobretensionValor,
+    config.subtensionEnabled   ? "true" : "false", (double)config.subtensionValor,
+    config.consumoEnabled      ? "true" : "false", (double)config.consumoValor,
+    config.consumoEnAmperios ? "A" : "W",
+    config.icpEnabled          ? "true" : "false", (double)config.icpNominal, config.icpUmbral
+  );
+}
+
+// Publishes the alert configuration (retained) on connect and on config save,
+// so MQTT-only apps get it instantly when they subscribe.
+void publishAlertsConfigMQTT() {
+  if (!mqttClient.connected()) return;
+  char payload[320];
+  int n = buildAlertsConfigJson(payload, sizeof(payload));
+  if (n > 0 && n < (int)sizeof(payload)) {
+    mqttClient.publish(MQTT_TOPIC_ALERTS_CONFIG, payload, true);
+  }
+}
+
 void setupMQTT() {
   mqttClient.setServer(config.mqttBroker, 1883);
   mqttClient.setCallback(mqttCallback);
@@ -926,6 +966,7 @@ void setupMQTT() {
     if (mqttClient.connect(config.mqttClient)) {
       mqttOk = true;
       mqttClient.publish(MQTT_TOPIC_STATUS, "online", true);
+      publishAlertsConfigMQTT();
       Serial.println(F("[MQTT] Connected."));
       return;
     }
@@ -956,6 +997,7 @@ void keepMQTTAlive() {
       if (mqttClient.connect(config.mqttClient)) {
         mqttOk = true;
         mqttClient.publish(MQTT_TOPIC_STATUS, "online", true);
+        publishAlertsConfigMQTT();
         Serial.println(F("[MQTT] Reconnected."));
       } else {
         mqttOk = false;
@@ -1210,7 +1252,7 @@ static void updateAlertLatch(bool &latch, uint8_t &count, bool valid, bool trigC
 }
 
 AlertState evaluateAlerts() {
-  AlertState st = { false, "", "" };
+  AlertState st = { false, "", "", false, false, false, false };
 
   // Latched alert states. Updated every cycle, regardless of which alert ends
   // up being displayed.
@@ -1234,30 +1276,26 @@ AlertState evaluateAlerts() {
                    consumoVal < config.consumoValor * (1.0f - ALERT_HYST_CONSUMO_PCT));
 
   float mult = (isnan(current) || config.icpNominal <= 0) ? 0 : current / config.icpNominal;
-  if (config.icpEnabled && icpCarga >= config.icpUmbral && mult >= 1.13f) {
-    st.any = true;
+  st.icp     = config.icpEnabled && icpCarga >= config.icpUmbral && mult >= 1.13f;
+  st.sobre   = sobreLatch;
+  st.sub     = subLatch;
+  st.consumo = consumoLatch;
+  st.any = st.icp || st.sobre || st.sub || st.consumo;
+
+  // LCD/buzzer message: highest-priority active alert
+  if (st.icp) {
     snprintf(st.msg, sizeof(st.msg), "ICP TRIP WARN");
     snprintf(st.value, sizeof(st.value), "%.2fA %.0f%%", current, icpCarga);
-    return st;
-  }
-  if (sobreLatch) {
-    st.any = true;
+  } else if (st.sobre) {
     snprintf(st.msg, sizeof(st.msg), "OVERVOLT WARN");
     snprintf(st.value, sizeof(st.value), "%.1fV", voltage);
-    return st;
-  }
-  if (subLatch) {
-    st.any = true;
+  } else if (st.sub) {
     snprintf(st.msg, sizeof(st.msg), "UNDERVOLT WARN");
     snprintf(st.value, sizeof(st.value), "%.1fV", voltage);
-    return st;
-  }
-  if (consumoLatch) {
-    st.any = true;
+  } else if (st.consumo) {
     snprintf(st.msg, sizeof(st.msg), "CONSUMPTION WARN");
     if (config.consumoEnAmperios) snprintf(st.value, sizeof(st.value), "%.2fA", current);
     else                          snprintf(st.value, sizeof(st.value), "%.0fW", power);
-    return st;
   }
   return st;
 }
@@ -1276,6 +1314,24 @@ static inline void json_write_num_or_err(char* dst, size_t n, float v, const cha
   } else {
     snprintf(dst, n, "%.2f", v);
   }
+}
+
+// Builds the JSON "alerts" array of currently active alerts from lastAlert,
+// e.g. ["sobretension","consumo"]. No active alerts -> [].
+static void json_write_alerts(char* dst, size_t n) {
+  const char* names[4];
+  uint8_t cnt = 0;
+  if (lastAlert.icp)     names[cnt++] = "icp";
+  if (lastAlert.sobre)   names[cnt++] = "sobretension";
+  if (lastAlert.sub)     names[cnt++] = "subtension";
+  if (lastAlert.consumo) names[cnt++] = "consumo";
+
+  size_t w = snprintf(dst, n, "[");
+  for (uint8_t i = 0; i < cnt && w < n; ++i) {
+    w += snprintf(dst + w, n - w, "%s\"%s\"", i ? "," : "", names[i]);
+  }
+  if (w < n) snprintf(dst + w, n - w, "]");
+  dst[n - 1] = '\0';
 }
 
 void publishAllMQTT() {
@@ -1298,10 +1354,13 @@ void publishAllMQTT() {
     snprintf(s_icp, sizeof(s_icp), "%d%%", (int)round(icpCarga));
   }
 
-  char payload[300];
+  char s_alerts[48];
+  json_write_alerts(s_alerts, sizeof(s_alerts));
+
+  char payload[384];
   int n = snprintf(payload, sizeof(payload),
-                   "{\"voltaje\":\"%s\",\"corriente\":\"%s\",\"potencia\":\"%s\",\"energia\":\"%s\",\"factor_potencia\":\"%s\",\"frecuencia\":\"%s\",\"icp\":\"%s\",\"timestamp\":%ld}",
-                   s_volt, s_curr, s_pow, s_ener, s_pf, s_frq, s_icp, ts);
+                   "{\"voltaje\":\"%s\",\"corriente\":\"%s\",\"potencia\":\"%s\",\"energia\":\"%s\",\"factor_potencia\":\"%s\",\"frecuencia\":\"%s\",\"icp\":\"%s\",\"alerts\":%s,\"timestamp\":%ld}",
+                   s_volt, s_curr, s_pow, s_ener, s_pf, s_frq, s_icp, s_alerts, ts);
 
   // Send single unified JSON payload to state topic
   if (n > 0 && n < (int)sizeof(payload)) {
@@ -1348,6 +1407,7 @@ void readSensorsAndTriggerAlerts() {
 
   // 3) Alerts + transition logging
   AlertState alert = evaluateAlerts();
+  lastAlert = alert;  // expose active alerts to /json and MQTT
 
   // 4) Buzzer
   driveBuzzer(alert.any);
@@ -1465,6 +1525,7 @@ void handleConfigPost() {
   }
 
   saveConfig();
+  publishAlertsConfigMQTT();  // refresh retained alert config for MQTT apps
 
   if (String(config.mqttBroker) != oldBroker || String(config.mqttClient) != oldClient) {
     mqttClient.disconnect();
@@ -1627,6 +1688,9 @@ void handleJson() {
   if (isnan(icpCarga)) snprintf(s_icp, sizeof(s_icp), "%s", "error");
   else                 snprintf(s_icp, sizeof(s_icp), "%d%%", (int)round(icpCarga));
 
+  char s_alerts[48];
+  json_write_alerts(s_alerts, sizeof(s_alerts));
+
   // Human readable energy reset text
   char humanBuf[64];
   formatElapsedTimeTo(humanBuf, sizeof(humanBuf), config.lastEnergyReset);
@@ -1637,7 +1701,7 @@ void handleJson() {
   const long ts = (ntpOK && ntpEpoch != -1) ? (long)time(nullptr) : (long)getCurrentEpoch();
   const long er = (long)config.lastEnergyReset;
 
-  static char out[384];
+  static char out[448];
   int n = snprintf(
     out, sizeof(out),
     "{"
@@ -1648,11 +1712,12 @@ void handleJson() {
       "\"factor_potencia\":\"%s\","
       "\"frecuencia\":\"%s\","
       "\"icp\":\"%s\","
+      "\"alerts\":%s,"
       "\"timestamp\":%ld,"
       "\"energy_reset\":%ld,"
       "\"energy_reset_human\":\"%s\""
     "}",
-    s_volt, s_curr, s_pow, s_ener, s_pf, s_frq, s_icp,
+    s_volt, s_curr, s_pow, s_ener, s_pf, s_frq, s_icp, s_alerts,
     ts, er, humanEsc
   );
   if (n < 0) { server.send(500, "text/plain", "format error"); return; }
@@ -1675,6 +1740,16 @@ void handleJsonLCD() {
 
   static char out[96];
   int n = snprintf(out, sizeof(out), "{\"lcd1\":\"%s\",\"lcd2\":\"%s\"}", l1, l2);
+  if (n < 0) { server.send(500, "text/plain", "format error"); return; }
+
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json; charset=utf-8", out);
+}
+
+// --- /json_alerts ---
+void handleJsonAlerts() {
+  static char out[320];
+  int n = buildAlertsConfigJson(out, sizeof(out));
   if (n < 0) { server.send(500, "text/plain", "format error"); return; }
 
   server.sendHeader("Cache-Control", "no-store");
@@ -1744,6 +1819,7 @@ void setupWeb() {
 
   server.on("/json", handleJson);
   server.on("/json_lcd", handleJsonLCD);
+  server.on("/json_alerts", handleJsonAlerts);
   server.on("/wipe_eeprom", handleWipeEEPROM);
   server.on("/reset", handleReset);
 

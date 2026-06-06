@@ -67,12 +67,13 @@ It ships with a **web configuration panel** served by the device itself and a **
 
 ### MQTT topics
 
-| Topic                          | Direction  | Content                                    |
-|--------------------------------|------------|--------------------------------------------|
-| `electricidad/casa/estado`     | publish    | JSON with all metrics (*retained*)         |
-| `electricidad/casa/icp`        | subscribe  | ICP state recovery at boot                 |
-| `multimetreitor/status`        | publish    | `online` (*retained*)                      |
-| `multimetreitor/serial`        | publish    | Serial-port log                            |
+| Topic                              | Direction  | Content                                          |
+|------------------------------------|------------|--------------------------------------------------|
+| `electricidad/casa/estado`         | publish    | JSON with all metrics and active alerts (*retained*) |
+| `electricidad/casa/icp`            | subscribe  | ICP state recovery at boot                       |
+| `electricidad/casa/alertas_config` | publish    | Alert configuration: enabled flags + thresholds (*retained*, refreshed on connect and on config save) |
+| `multimetreitor/status`            | publish    | `online` (*retained*)                            |
+| `multimetreitor/serial`            | publish    | Serial-port log                                  |
 
 **Example state payload:**
 
@@ -85,11 +86,23 @@ It ships with a **web configuration panel** served by the device itself and a **
   "factor_potencia": "0.95",
   "frecuencia": "50.0Hz",
   "icp": "62%",
+  "alerts": ["sobretension"],
   "timestamp": 1700000000
 }
 ```
 
 > ℹ️ The JSON keys are in Spanish (`voltaje`, `corriente`, …) because they are the published data contract consumed by the Rainmeter skin.
+
+`alerts` lists the currently active alerts (`[]` when none): `icp`, `sobretension`, `subtension`, `consumo`. The same array is served by the web endpoint `/json`. To interpret it, external apps can read the alert configuration (enabled checkbox + configured threshold per alert) from the retained `electricidad/casa/alertas_config` topic or from `/json_alerts`:
+
+```json
+{
+  "sobretension": { "enabled": true,  "umbral": 250.0, "unidad": "V" },
+  "subtension":   { "enabled": true,  "umbral": 200.0, "unidad": "V" },
+  "consumo":      { "enabled": false, "umbral": 0.00,  "unidad": "W" },
+  "icp":          { "enabled": true,  "nominal": 25.00, "umbral": 40, "unidad": "%" }
+}
+```
 
 ---
 
