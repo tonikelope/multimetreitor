@@ -13,6 +13,7 @@
 #include <ArduinoJson.h>
 #include <ArduinoOTA.h>
 #include <time.h>
+#include <memory>
 #include "secrets.h"  // WiFi credentials (not versioned — see secrets.h.example)
 
 #ifndef TZ_INFO
@@ -435,7 +436,9 @@ IPAddress dns(192, 168, 1, 1);
 #define WIFI_RETRY_INTERVAL_MS 10000
 #define WIFI_COOLDOWN_INTERVAL_MS 30000
 #define WIFI_SETUP_TIMEOUT_MS 20000UL  // per-phase boot connect wait (static, then DHCP); loop() keeps retrying after
-#define ICP_RECOVER_TIMEOUT_MS 20000
+// A retained message is delivered sub-second after subscribing; the timeout
+// only fully elapses when there is nothing to recover, so keep it short.
+#define ICP_RECOVER_TIMEOUT_MS 3000
 #define NTP_WAIT_TIMEOUT_MS 30000
 #define NTP_RESYNC_INTERVAL_MS 86400000UL
 
@@ -710,6 +713,9 @@ static bool waitWiFiConnected(unsigned long timeoutMs) {
 }
 
 void setupWiFi() {
+  // Disable Nagle on all TCP connections (MQTT publishes and web responses):
+  // small packets go out immediately instead of waiting up to ~40ms for an ACK.
+  WiFiClient::setDefaultNoDelay(true);
   WiFi.mode(WIFI_STA);
   WiFi.hostname(WIFI_HOSTNAME);
   wifiTries = 0;
@@ -803,6 +809,7 @@ void setupTime() {
 
   while (!ntpOK) {
     handleOTA();
+    server.handleClient();  // keep the web UI responsive during the NTP wait
     yield();
     time_t now = time(nullptr);
     if (now > 1609459200) {  // >= 2021-01-01, valid time
@@ -829,6 +836,7 @@ void setupTime() {
     unsigned long t0 = millis();
     while (millis() - t0 < 50) {
       handleOTA();
+      server.handleClient();
       yield();
     }
   }
@@ -960,6 +968,10 @@ void setupMQTT() {
   mqttClient.setServer(config.mqttBroker, 1883);
   mqttClient.setCallback(mqttCallback);
   mqttClient.setBufferSize(512);  // state JSON payload can exceed the 256-byte default
+  // Cap connect() blocking time: with the broker down, the defaults froze the
+  // whole loop ~5s (TCP connect) to 15s (CONNACK wait) per attempt.
+  espClient.setTimeout(3000);
+  mqttClient.setSocketTimeout(3);
 
   const int MAX_TRIES = 5;
   for (int i = 0; i < MAX_TRIES; ++i) {
@@ -976,6 +988,7 @@ void setupMQTT() {
     unsigned long t0 = millis();
     while (millis() - t0 < 1000) {
       handleOTA();
+      server.handleClient();
       yield();
     }
   }
@@ -1046,6 +1059,7 @@ void recoverICP() {
   while ((!icpRecibido || !tsRecibido) && (millis() - startWait < ICP_RECOVER_TIMEOUT_MS)) {
     handleOTA();
     mqttClient.loop();
+    server.handleClient();
     yield();
   }
   mqttClient.loop();
@@ -1213,6 +1227,45 @@ LCDLines composeLCDLines() {
   return out;
 }
 
+// Space-pads a string to exactly 16 chars so a line print fully overwrites
+// the previous content (this is what lets us skip lcd.clear()).
+static void lcdPad16(const char* src, char out[17]) {
+  uint8_t i = 0;
+  for (; i < 16 && src[i]; ++i) out[i] = src[i];
+  for (; i < 16; ++i) out[i] = ' ';
+  out[16] = '\0';
+}
+
+// Redraws only the characters that changed since the last render. Avoids
+// lcd.clear() (2ms busy-wait + flicker) and cuts the per-cycle LCD cost from
+// ~54-60ms (full redraw: 6 I2C transactions per char at ~1.8ms) to a few ms,
+// since normally only a handful of digits jitter between readings. Changed
+// runs separated by <=2 unchanged chars are coalesced: a setCursor costs
+// about the same as printing one char.
+void renderLCD() {
+  static char prev[2][17] = { "", "" };
+  char now[2][17];
+  lcdPad16(lcdLine1, now[0]);
+  lcdPad16(lcdLine2, now[1]);
+  for (uint8_t row = 0; row < 2; ++row) {
+    uint8_t col = 0;
+    while (col < 16) {
+      if (now[row][col] == prev[row][col]) { ++col; continue; }
+      uint8_t lastDiff = col;
+      uint8_t end = col + 1;
+      while (end < 16 && (now[row][end] != prev[row][end] || end - lastDiff <= 2)) {
+        if (now[row][end] != prev[row][end]) lastDiff = end;
+        ++end;
+      }
+      end = lastDiff + 1;  // trim trailing coalesced-but-unchanged chars
+      lcd.setCursor(col, row);
+      for (uint8_t i = col; i < end; ++i) lcd.write((uint8_t)now[row][i]);
+      col = end;
+    }
+    memcpy(prev[row], now[row], sizeof(now[row]));
+  }
+}
+
 void showLCDSplash() {
   strncpy(lcdLine1, "MULTIMETREITOR", 16);
   strncpy(lcdLine2, "Starting...     ", 16);
@@ -1372,12 +1425,23 @@ void publishAllMQTT() {
   // Only with a valid NTP timestamp, because recovery applies cooldown by the
   // elapsed time since this timestamp. Outside boot we are not subscribed to
   // this topic, so this never feeds back into mqttCallback().
+  // Throttled: republishing an identical value every second only churned the
+  // broker's retained store. recoverICP() compensates elapsed time from the
+  // timestamp (cooldown is applied per second since it), so a snapshot up to
+  // 60s old recovers the same (decay case) or slightly lower (conservative).
   if ((ntpOK && ntpEpoch != -1) && !isnan(icpCarga)) {
-    char icpPayload[64];
-    int m = snprintf(icpPayload, sizeof(icpPayload),
-                     "{\"valor\":%.2f,\"timestamp\":%ld}", icpCarga, ts);
-    if (m > 0 && m < (int)sizeof(icpPayload)) {
-      mqttClient.publish(MQTT_TOPIC_ICP_RECOVERY, icpPayload, true);
+    static int lastIcpPublished = -1;
+    static unsigned long lastIcpPublishMs = 0;
+    int icpRounded = (int)round(icpCarga);
+    if (icpRounded != lastIcpPublished || millis() - lastIcpPublishMs >= 60000UL) {
+      char icpPayload[64];
+      int m = snprintf(icpPayload, sizeof(icpPayload),
+                       "{\"valor\":%.2f,\"timestamp\":%ld}", icpCarga, ts);
+      if (m > 0 && m < (int)sizeof(icpPayload)) {
+        mqttClient.publish(MQTT_TOPIC_ICP_RECOVERY, icpPayload, true);
+        lastIcpPublished = icpRounded;
+        lastIcpPublishMs = millis();
+      }
     }
   }
 }
@@ -1426,18 +1490,14 @@ void readSensorsAndTriggerAlerts() {
     lcdLine2[16] = '\0';
   }
 
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print(lcdLine1);
-  lcd.setCursor(0, 1);
-  lcd.print(lcdLine2);
+  renderLCD();
 
   // 6) MQTT
   publishAllMQTT();
 }
 
 // ================== WEB ========================
-String configForm();  // fwd
+void handleConfigForm();  // fwd
 
 void handleConfigPost() {
   String oldBroker = String(config.mqttBroker);
@@ -1534,41 +1594,101 @@ void handleConfigPost() {
   server.send(200, "text/html", "<meta http-equiv='refresh' content='0; url=/'>Guardado, vuelva a <a href='/'>inicio</a>");
 }
 
-String configForm() {
-  String html(FPSTR(MAIN_html));
-  html.replace("%LOCAL_IP%", local_ip.toString());
-  html.replace("%MQTT_BROKER%", String(config.mqttBroker));
-  html.replace("%MQTT_CLIENT%", String(config.mqttClient));
-  html.replace("%MQTT_STATUS%", (mqttOk ? "<span class='mqtt-status mqtt-ok'>(CONECTADO)</span>" : "<span class='mqtt-status mqtt-fail'>(NO CONECTADO)</span>"));
-  html.replace("%REFRESH_INTERVAL%", String(config.refreshInterval));
-  html.replace("%ALERTA_SONORA%", config.alertaSonora ? "checked" : "");
-  html.replace("%CONSUMO_ENABLED%", config.consumoEnabled ? "checked" : "");
-  html.replace("%CONSUMO_A%", config.consumoEnAmperios ? "checked" : "");
-  html.replace("%CONSUMO_W%", !config.consumoEnAmperios ? "checked" : "");
-  html.replace("%CONSUMO_VALOR%", String(config.consumoValor, 2));
-  html.replace("%SOBRE_ENABLED%", config.sobretensionEnabled ? "checked" : "");
-  html.replace("%SOBRE_VALOR%", String(config.sobretensionValor, 1));
-  html.replace("%SUB_ENABLED%", config.subtensionEnabled ? "checked" : "");
-  html.replace("%SUB_VALOR%", String(config.subtensionValor, 1));
-  html.replace("%ICP_ENABLED%", config.icpEnabled ? "checked" : "");
-  html.replace("%ICP_NOMINAL%", String(config.icpNominal, 1));
-  html.replace("%ICP_UMBRAL%", String(config.icpUmbral));
-  html.replace("%LCD_VOLT%", (config.lcdMask & (1 << LCD_VOLT)) ? "checked" : "");
-  html.replace("%LCD_FREQ%", (config.lcdMask & (1 << LCD_FREQ)) ? "checked" : "");
-  html.replace("%LCD_POWR%", (config.lcdMask & (1 << LCD_POWR)) ? "checked" : "");
-  html.replace("%LCD_CURR%", (config.lcdMask & (1 << LCD_CURR)) ? "checked" : "");
-  html.replace("%LCD_ENER%", (config.lcdMask & (1 << LCD_ENER)) ? "checked" : "");
-  html.replace("%LCD_PF%", (config.lcdMask & (1 << LCD_PF)) ? "checked" : "");
-  html.replace("%LCD_ICP%", (config.lcdMask & (1 << LCD_ICP)) ? "checked" : "");
-  html.replace("%CURVE0%", String(config.icpCurveTimes[0]));
-  html.replace("%CURVE1%", String(config.icpCurveTimes[1]));
-  html.replace("%CURVE2%", String(config.icpCurveTimes[2]));
-  html.replace("%CURVE3%", String(config.icpCurveTimes[3]));
-  html.replace("%CURVE4%", String(config.icpCurveTimes[4]));
-  html.replace("%CURVE5%", String(config.icpCurveTimes[5]));
-  html.replace("%COOLDOWN%", String(config.icpCooldownTime));
-  html.replace("%LAST_RESET_TIME%", formatElapsedTime(config.lastEnergyReset));
-  return html;
+// Streams the config page from PROGMEM, substituting %TOKEN% placeholders on
+// the fly. Replaces the old String(FPSTR(MAIN_html)) + 32 .replace() approach,
+// which copied the whole ~22KB page to heap (the firmware's largest allocation
+// and its main long-uptime fragmentation risk) and froze the loop ~200ms per
+// page load (measured). Peak RAM here: ~1.2KB of stack.
+
+static void lcdMaskChecked(uint8_t bit, char* out, size_t n) {
+  strncpy_P(out, (config.lcdMask & (1 << bit)) ? PSTR("checked") : PSTR(""), n);
+  out[n - 1] = '\0';
+}
+
+// Writes the value of a template token into out. Returns false for unknown
+// tokens, which are then emitted literally (CSS percentages etc. never match).
+static bool configTokenValue(const char* tok, char* out, size_t n) {
+  out[0] = '\0';
+  if      (!strcmp_P(tok, PSTR("LOCAL_IP")))         snprintf_P(out, n, PSTR("%s"), local_ip.toString().c_str());
+  else if (!strcmp_P(tok, PSTR("MQTT_BROKER")))      snprintf_P(out, n, PSTR("%s"), config.mqttBroker);
+  else if (!strcmp_P(tok, PSTR("MQTT_CLIENT")))      snprintf_P(out, n, PSTR("%s"), config.mqttClient);
+  else if (!strcmp_P(tok, PSTR("MQTT_STATUS"))) {
+    strncpy_P(out, mqttOk ? PSTR("<span class='mqtt-status mqtt-ok'>(CONECTADO)</span>")
+                          : PSTR("<span class='mqtt-status mqtt-fail'>(NO CONECTADO)</span>"), n);
+    out[n - 1] = '\0';
+  }
+  else if (!strcmp_P(tok, PSTR("REFRESH_INTERVAL"))) snprintf_P(out, n, PSTR("%lu"), config.refreshInterval);
+  else if (!strcmp_P(tok, PSTR("ALERTA_SONORA")))    { strncpy_P(out, config.alertaSonora ? PSTR("checked") : PSTR(""), n); out[n-1] = '\0'; }
+  else if (!strcmp_P(tok, PSTR("CONSUMO_ENABLED")))  { strncpy_P(out, config.consumoEnabled ? PSTR("checked") : PSTR(""), n); out[n-1] = '\0'; }
+  else if (!strcmp_P(tok, PSTR("CONSUMO_A")))        { strncpy_P(out, config.consumoEnAmperios ? PSTR("checked") : PSTR(""), n); out[n-1] = '\0'; }
+  else if (!strcmp_P(tok, PSTR("CONSUMO_W")))        { strncpy_P(out, !config.consumoEnAmperios ? PSTR("checked") : PSTR(""), n); out[n-1] = '\0'; }
+  else if (!strcmp_P(tok, PSTR("CONSUMO_VALOR")))    snprintf_P(out, n, PSTR("%.2f"), (double)config.consumoValor);
+  else if (!strcmp_P(tok, PSTR("SOBRE_ENABLED")))    { strncpy_P(out, config.sobretensionEnabled ? PSTR("checked") : PSTR(""), n); out[n-1] = '\0'; }
+  else if (!strcmp_P(tok, PSTR("SOBRE_VALOR")))      snprintf_P(out, n, PSTR("%.1f"), (double)config.sobretensionValor);
+  else if (!strcmp_P(tok, PSTR("SUB_ENABLED")))      { strncpy_P(out, config.subtensionEnabled ? PSTR("checked") : PSTR(""), n); out[n-1] = '\0'; }
+  else if (!strcmp_P(tok, PSTR("SUB_VALOR")))        snprintf_P(out, n, PSTR("%.1f"), (double)config.subtensionValor);
+  else if (!strcmp_P(tok, PSTR("ICP_ENABLED")))      { strncpy_P(out, config.icpEnabled ? PSTR("checked") : PSTR(""), n); out[n-1] = '\0'; }
+  else if (!strcmp_P(tok, PSTR("ICP_NOMINAL")))      snprintf_P(out, n, PSTR("%.1f"), (double)config.icpNominal);
+  else if (!strcmp_P(tok, PSTR("ICP_UMBRAL")))       snprintf_P(out, n, PSTR("%d"), config.icpUmbral);
+  else if (!strcmp_P(tok, PSTR("LCD_VOLT")))         lcdMaskChecked(LCD_VOLT, out, n);
+  else if (!strcmp_P(tok, PSTR("LCD_FREQ")))         lcdMaskChecked(LCD_FREQ, out, n);
+  else if (!strcmp_P(tok, PSTR("LCD_POWR")))         lcdMaskChecked(LCD_POWR, out, n);
+  else if (!strcmp_P(tok, PSTR("LCD_CURR")))         lcdMaskChecked(LCD_CURR, out, n);
+  else if (!strcmp_P(tok, PSTR("LCD_ENER")))         lcdMaskChecked(LCD_ENER, out, n);
+  else if (!strcmp_P(tok, PSTR("LCD_PF")))           lcdMaskChecked(LCD_PF, out, n);
+  else if (!strcmp_P(tok, PSTR("LCD_ICP")))          lcdMaskChecked(LCD_ICP, out, n);
+  else if (!strcmp_P(tok, PSTR("CURVE0")))           snprintf_P(out, n, PSTR("%d"), config.icpCurveTimes[0]);
+  else if (!strcmp_P(tok, PSTR("CURVE1")))           snprintf_P(out, n, PSTR("%d"), config.icpCurveTimes[1]);
+  else if (!strcmp_P(tok, PSTR("CURVE2")))           snprintf_P(out, n, PSTR("%d"), config.icpCurveTimes[2]);
+  else if (!strcmp_P(tok, PSTR("CURVE3")))           snprintf_P(out, n, PSTR("%d"), config.icpCurveTimes[3]);
+  else if (!strcmp_P(tok, PSTR("CURVE4")))           snprintf_P(out, n, PSTR("%d"), config.icpCurveTimes[4]);
+  else if (!strcmp_P(tok, PSTR("CURVE5")))           snprintf_P(out, n, PSTR("%d"), config.icpCurveTimes[5]);
+  else if (!strcmp_P(tok, PSTR("COOLDOWN")))         snprintf_P(out, n, PSTR("%d"), config.icpCooldownTime);
+  else if (!strcmp_P(tok, PSTR("LAST_RESET_TIME")))  formatElapsedTimeTo(out, n, config.lastEnergyReset);
+  else return false;
+  return true;
+}
+
+void handleConfigForm() {
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "text/html; charset=utf-8", "");
+
+  // Transient heap accumulator (2 full TCP segments per chunk minimizes
+  // ACK round-trips). 2.9KB for one request vs the old permanent ~22KB String.
+  const size_t BUF_SZ = 2920;
+  std::unique_ptr<char[]> bufOwner(new char[BUF_SZ]);
+  char* buf = bufOwner.get();
+  size_t bn = 0;
+  auto flush = [&]() { if (bn) { server.sendContent(buf, bn); bn = 0; } };
+  auto put = [&](char c) { buf[bn++] = c; if (bn == BUF_SZ) flush(); };
+
+  PGM_P p = MAIN_html;
+  char c;
+  while ((c = (char)pgm_read_byte(p)) != 0) {
+    if (c == '%') {
+      // Try to read a %TOKEN% (A-Z, 0-9, _)
+      char tok[24];
+      uint8_t tl = 0;
+      PGM_P q = p + 1;
+      char d;
+      while (tl < sizeof(tok) - 1 && (d = (char)pgm_read_byte(q)) != 0 &&
+             ((d >= 'A' && d <= 'Z') || (d >= '0' && d <= '9') || d == '_')) {
+        tok[tl++] = d;
+        ++q;
+      }
+      tok[tl] = '\0';
+      char val[96];
+      if (tl > 0 && (char)pgm_read_byte(q) == '%' && configTokenValue(tok, val, sizeof(val))) {
+        for (const char* v = val; *v; ++v) put(*v);
+        p = q + 1;
+        continue;
+      }
+    }
+    put(c);
+    ++p;
+  }
+  flush();
+  // _finalizeResponse() in the web server sends the terminating chunk.
 }
 
 void handleReset() {
@@ -1701,7 +1821,9 @@ void handleJson() {
   const long ts = (ntpOK && ntpEpoch != -1) ? (long)time(nullptr) : (long)getCurrentEpoch();
   const long er = (long)config.lastEnergyReset;
 
-  static char out[448];
+  // Stack, not static: server.send() streams synchronously, and static BSS
+  // bytes are heap permanently lost (these 4 buffers held 888B).
+  char out[448];
   int n = snprintf(
     out, sizeof(out),
     "{"
@@ -1738,7 +1860,7 @@ void handleJsonLCD() {
   json_escape(l1raw, l1, sizeof(l1));
   json_escape(l2raw, l2, sizeof(l2));
 
-  static char out[96];
+  char out[96];
   int n = snprintf(out, sizeof(out), "{\"lcd1\":\"%s\",\"lcd2\":\"%s\"}", l1, l2);
   if (n < 0) { server.send(500, "text/plain", "format error"); return; }
 
@@ -1748,7 +1870,7 @@ void handleJsonLCD() {
 
 // --- /json_alerts ---
 void handleJsonAlerts() {
-  static char out[320];
+  char out[320];
   int n = buildAlertsConfigJson(out, sizeof(out));
   if (n < 0) { server.send(500, "text/plain", "format error"); return; }
 
@@ -1814,7 +1936,7 @@ void handleConsumo() {
 void setupWeb() {
   server.on("/", []() {
     if (server.method() == HTTP_POST) handleConfigPost();
-    else server.send(200, "text/html; charset=utf-8", configForm());
+    else handleConfigForm();
   });
 
   server.on("/json", handleJson);
@@ -1824,7 +1946,7 @@ void setupWeb() {
   server.on("/reset", handleReset);
 
   server.on("/mqtt_status", []() {
-    static char out[24];
+    char out[24];
     const char* val = mqttOk ? "true" : "false";
     int n = snprintf(out, sizeof(out), "{\"ok\":%s}", val);
     if (n < 0) { server.send(500, "text/plain", "format error"); return; }
@@ -1938,9 +2060,9 @@ void setup() {
   showLCDSplash();
   setupWiFi();
   setupOTA();
+  setupWeb();  // before the (possibly long) NTP/MQTT/ICP waits, which pump handleClient()
   setupTime();
   setupMQTT();
-  setupWeb();
   recoverICP();
   logMessage(F("[SETUP] Ready. Entering loop."));
 }
