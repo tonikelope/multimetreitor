@@ -303,10 +303,15 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       document.documentElement.lang = lang;
       try { localStorage.setItem('mmt_lang', lang); } catch(e){}
     };
-    window.toggleLang = function(){ applyLang(CURRENT_LANG==='es'?'en':'es'); };
+    window.toggleLang = function(){
+      var nl = (CURRENT_LANG==='es'?'en':'es');
+      applyLang(nl);                                  // translate the UI client-side (as before)
+      try { fetch('/set_lang?lang='+nl); } catch(e){} // and persist it on the device (also drives the LCD)
+    };
     document.addEventListener('DOMContentLoaded', function() {
-      var _saved=null; try{ _saved=localStorage.getItem('mmt_lang'); }catch(e){}
-      applyLang(_saved==='en'?'en':'es');
+      // The device-saved language (rendered server-side) is the source of truth,
+      // so a fresh browser loads the language stored on the device.
+      applyLang('%LANG%'==='en'?'en':'es');
        function updateLastResetTime() {
         fetch('/last_reset')
           .then(r => r.text())
@@ -456,12 +461,16 @@ IPAddress dns(192, 168, 1, 1);
 #define LCD_FREQ 5
 #define LCD_ICP 6
 
+// LCD message language (persisted in config.lcdLang, driven by the web UI toggle)
+enum LcdLang : uint8_t { LANG_ES = 0, LANG_EN = 1 };
+
 // ================== DEFAULTS ====================
 #define DEF_MQTT_BROKER "192.168.1.5"
 #define DEF_MQTT_CLIENT "multimetreitor"
 #define DEF_REFRESH_MS 1000
 #define DEF_ALERTA_SONORA true
 #define DEF_LCD_MASK ((1 << LCD_VOLT) | (1 << LCD_CURR))
+#define DEF_LCD_LANG LANG_ES   // default LCD/web message language: Spanish
 #define DEF_ICP_ENABLED false
 #define DEF_ICP_NOMINAL 25.0f
 #define DEF_ICP_UMBRAL 75
@@ -533,6 +542,11 @@ struct AppConfig {
   uint8_t historyIndex;
   uint8_t currentMonth;
   uint16_t currentYear;
+
+  // Appended at the END on purpose: keeps every preceding field at the same
+  // EEPROM offset, so existing configs/energy history survive the upgrade
+  // without a CONFIG_VERSION bump. Garbage from old EEPROM is clamped in loadConfig().
+  uint8_t lcdLang;
 };
 
 // ================== LCD TEXT & ALERTS ==========
@@ -656,6 +670,8 @@ void setDefaults() {
   config.historyIndex = 0;
   config.currentMonth = 0;
   config.currentYear = 0;
+
+  config.lcdLang = DEF_LCD_LANG;
 }
 
 void saveConfig() {
@@ -698,6 +714,11 @@ void loadConfig() {
     setDefaults();
     saveConfig();
   }
+
+  // lcdLang was appended to AppConfig without a version bump, so a config saved
+  // by older firmware has a garbage byte here. Clamp it to the default instead
+  // of wiping the whole config (which would lose the energy history).
+  if (config.lcdLang > LANG_EN) config.lcdLang = DEF_LCD_LANG;
 }
 
 // ================== WIFI =======================
@@ -1171,6 +1192,19 @@ void driveBuzzer(bool hasAlert) {
 }
 
 // ================== LCD TEXT ===================
+// On-screen text messages (boot splash + alert warnings) are bilingual. The
+// active language lives in config.lcdLang (persisted in EEPROM, set from the web
+// UI language toggle, defaults to Spanish). Numeric readings and status symbols
+// are universal and stay as-is.
+//
+// Bilingual LCD messages, indexed [config.lcdLang]. Kept <=16 chars to fit the LCD.
+//                                              ES (default)       EN
+static const char* const LCD_MSG_STARTING[2]  = { "Iniciando...",    "Starting..." };
+static const char* const ALERT_MSG_ICP[2]     = { "AVISO SALTO ICP", "ICP TRIP WARN" };
+static const char* const ALERT_MSG_OVER[2]    = { "SOBRETENSION",    "OVERVOLT WARN" };
+static const char* const ALERT_MSG_UNDER[2]   = { "SUBTENSION",      "UNDERVOLT WARN" };
+static const char* const ALERT_MSG_CONSUMO[2] = { "AVISO CONSUMO",   "CONSUMPTION WARN" };
+
 LCDLines composeLCDLines() {
   LCDLines out;
   memset(&out, 0, sizeof(LCDLines));
@@ -1268,9 +1302,8 @@ void renderLCD() {
 
 void showLCDSplash() {
   strncpy(lcdLine1, "MULTIMETREITOR", 16);
-  strncpy(lcdLine2, "Starting...     ", 16);
   lcdLine1[16] = '\0';
-  lcdLine2[16] = '\0';
+  lcdPad16(LCD_MSG_STARTING[config.lcdLang], lcdLine2);  // pad to 16 so line fully overwrites
 
   lcd.init();
   lcd.backlight();
@@ -1337,16 +1370,16 @@ AlertState evaluateAlerts() {
 
   // LCD/buzzer message: highest-priority active alert
   if (st.icp) {
-    snprintf(st.msg, sizeof(st.msg), "ICP TRIP WARN");
+    snprintf(st.msg, sizeof(st.msg), "%s", ALERT_MSG_ICP[config.lcdLang]);
     snprintf(st.value, sizeof(st.value), "%.2fA %.0f%%", current, icpCarga);
   } else if (st.sobre) {
-    snprintf(st.msg, sizeof(st.msg), "OVERVOLT WARN");
+    snprintf(st.msg, sizeof(st.msg), "%s", ALERT_MSG_OVER[config.lcdLang]);
     snprintf(st.value, sizeof(st.value), "%.1fV", voltage);
   } else if (st.sub) {
-    snprintf(st.msg, sizeof(st.msg), "UNDERVOLT WARN");
+    snprintf(st.msg, sizeof(st.msg), "%s", ALERT_MSG_UNDER[config.lcdLang]);
     snprintf(st.value, sizeof(st.value), "%.1fV", voltage);
   } else if (st.consumo) {
-    snprintf(st.msg, sizeof(st.msg), "CONSUMPTION WARN");
+    snprintf(st.msg, sizeof(st.msg), "%s", ALERT_MSG_CONSUMO[config.lcdLang]);
     if (config.consumoEnAmperios) snprintf(st.value, sizeof(st.value), "%.2fA", current);
     else                          snprintf(st.value, sizeof(st.value), "%.0fW", power);
   }
@@ -1645,6 +1678,7 @@ static bool configTokenValue(const char* tok, char* out, size_t n) {
   else if (!strcmp_P(tok, PSTR("CURVE5")))           snprintf_P(out, n, PSTR("%d"), config.icpCurveTimes[5]);
   else if (!strcmp_P(tok, PSTR("COOLDOWN")))         snprintf_P(out, n, PSTR("%d"), config.icpCooldownTime);
   else if (!strcmp_P(tok, PSTR("LAST_RESET_TIME")))  formatElapsedTimeTo(out, n, config.lastEnergyReset);
+  else if (!strcmp_P(tok, PSTR("LANG")))             { strncpy_P(out, config.lcdLang == LANG_EN ? PSTR("en") : PSTR("es"), n); out[n-1] = '\0'; }
   else return false;
   return true;
 }
@@ -1955,6 +1989,21 @@ void setupWeb() {
 
   server.on("/last_reset", []() {
     server.send(200, "text/plain; charset=utf-8", formatElapsedTime(config.lastEnergyReset));
+  });
+
+  // Persist the LCD/web message language. Called by the web UI language toggle.
+  // Only writes EEPROM when the value actually changes (avoids flash wear on
+  // redundant calls). e.g. /set_lang?lang=en
+  server.on("/set_lang", []() {
+    if (server.hasArg("lang")) {
+      uint8_t nl = (server.arg("lang") == "en") ? LANG_EN : LANG_ES;
+      if (nl != config.lcdLang) {
+        config.lcdLang = nl;
+        saveConfig();
+      }
+    }
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "text/plain", "OK");
   });
 
   server.on("/consumo", handleConsumo);
