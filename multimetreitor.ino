@@ -3,6 +3,8 @@
  **************************************************/
 
 #include <ESP8266WiFi.h>
+#include <ESP8266HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 #include <ESP8266WebServer.h>
 #include <Wire.h>
@@ -14,6 +16,8 @@
 #include <ArduinoOTA.h>
 #include <time.h>
 #include <memory>
+#include <stddef.h>  // offsetof (AppConfig layout static_asserts)
+#include <ctype.h>   // isalnum (webhook URL encoding)
 #include "secrets.h"  // WiFi credentials (not versioned — see secrets.h.example)
 
 #ifndef TZ_INFO
@@ -137,6 +141,82 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       border-color: #e9ce33 !important;
     }
     #lastResetTime { font-weight: bold; color: #1e90ff; }
+
+    /* ===== Tabs ===== */
+    .tabbar { display:flex; gap:4px; margin:4px 0 18px 0; border-bottom:2px solid #e6e9f2; }
+    .tab-btn {
+      flex:1; padding:10px 6px; border:none; background:none; color:#778; font-size:1em;
+      font-family:inherit; cursor:pointer; border-bottom:3px solid transparent; margin-bottom:-2px;
+      font-weight:bold; letter-spacing:0.4px; transition:0.15s;
+    }
+    .tab-btn.on { color:#357aff; border-bottom-color:#357aff; }
+    .tab-btn:hover { color:#224; }
+    .rules-count-line { text-align:right; margin:-4px 0 10px 0; }
+    .rules-count { font-size:0.85em; font-weight:bold; color:#5566a0; background:#eef2fb; border-radius:10px; padding:2px 11px; }
+    .rules-count.full { color:#c33; background:#fde7e7; }
+
+    /* ===== Rule engine editor ===== */
+    .rules-intro { color:#555; font-size:0.97em; margin-bottom:12px; }
+    .rule-card {
+      border:1px solid #d6dcf0; border-left:4px solid #357aff; border-radius:10px;
+      background:#fbfcff; padding:12px 13px; margin-bottom:14px;
+      box-shadow:0 1px 5px #0001;
+    }
+    .rule-card.disabled { border-left-color:#bbb; opacity:0.72; }
+    .rule-head { display:flex; align-items:center; gap:9px; flex-wrap:wrap; margin-bottom:9px; }
+    .rule-head .rname { flex:1 1 130px; min-width:110px; margin-left:0; }
+    .rule-head .sw { display:flex; align-items:center; gap:5px; font-size:0.92em; color:#456; }
+    .rule-del {
+      background:#f4f6fb; color:#c33; border:1px solid #e2b6b6; border-radius:6px;
+      width:30px; height:30px; font-size:1.1em; line-height:1; cursor:pointer; padding:0;
+    }
+    .rule-del:hover { background:#fde7e7; }
+    .rule-block { background:#fff; border:1px solid #e7ebf5; border-radius:8px; padding:9px 10px; margin-bottom:9px; }
+    .rule-block > .lbl { font-size:0.82em; text-transform:uppercase; letter-spacing:0.5px; color:#8894ad; font-weight:bold; margin-bottom:6px; }
+    .cond-row { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:6px; }
+    .cond-row select, .cond-row input[type=number] { margin-left:0; }
+    .cond-row .metric { min-width:120px; }
+    .cond-row .op { width:56px; text-align:center; }
+    .cond-row .cval { width:88px; }
+    .cond-row .unit { color:#789; font-size:0.9em; min-width:32px; }
+    .cond-del { background:none; border:none; color:#c55; cursor:pointer; font-size:1.05em; padding:2px 5px; }
+    .cond-join { display:inline-flex; align-items:center; gap:6px; margin:2px 0 8px 2px; font-size:0.9em; color:#556; }
+    .rule-mini-btn {
+      background:#eef3ff; color:#2456c8; border:1px solid #c9d8f7; border-radius:6px;
+      padding:4px 11px; font-size:0.9em; cursor:pointer; margin-top:2px;
+    }
+    .rule-mini-btn:hover { background:#dde8ff; }
+    .action-tabs { display:flex; gap:6px; margin-bottom:9px; }
+    .action-tabs button {
+      flex:1; padding:7px 0; border:1px solid #c9d3ea; background:#f2f5fc; color:#456;
+      border-radius:7px; cursor:pointer; font-size:0.94em; font-family:inherit;
+    }
+    .action-tabs button.on { background:#357aff; color:#fff; border-color:#357aff; font-weight:bold; }
+    .rule-field { margin-bottom:8px; }
+    .rule-field label { display:block; font-size:0.9em; color:#556; margin-bottom:3px; }
+    .rule-field input[type=text] { width:100%; margin-left:0; box-sizing:border-box; }
+    .rule-field-row { display:flex; gap:8px; flex-wrap:wrap; }
+    .rule-field-row .rule-field { flex:1 1 130px; }
+    .rule-opts { display:flex; gap:16px; flex-wrap:wrap; align-items:center; font-size:0.92em; color:#456; margin-top:4px; }
+    .rule-opts label { display:inline-flex; align-items:center; gap:5px; }
+    .rule-opts input[type=number] { width:60px; }
+    .rule-test-btn { background:none; border:none; color:#2456c8; cursor:pointer; font-size:0.88em; text-decoration:underline; padding:0; margin-top:2px; }
+    .rules-actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:6px; }
+    .rules-actions button { flex:1 1 140px; }
+    .action-btn.rules-add { background:#5566cc; }
+    .action-btn.rules-add:hover { background:#3a48a0; }
+    .action-btn.rules-save { background:#0ab06b; }
+    .action-btn.rules-save:hover { background:#086c49; }
+    #rules-status { font-size:0.92em; margin-top:8px; min-height:1.2em; }
+    #rules-status.ok { color:#0a8; } #rules-status.err { color:#c33; }
+    .rule-action { border:1px dashed #cdd6ee; border-radius:8px; padding:8px 9px; margin-bottom:8px; background:#fcfdff; }
+    .act-head { display:flex; align-items:center; gap:8px; margin-bottom:7px; }
+    .act-num { font-size:0.8em; font-weight:bold; color:#8894ad; text-transform:uppercase; letter-spacing:0.5px; white-space:nowrap; }
+    .act-head .action-tabs { flex:1; margin-bottom:0; }
+    .act-del { background:none; border:none; color:#c55; cursor:pointer; font-size:1.05em; padding:2px 5px; line-height:1; }
+    .rule-add-action { background:#eef3ff; color:#2456c8; border:1px solid #c9d8f7; border-radius:6px; padding:5px 12px; font-size:0.9em; cursor:pointer; margin-bottom:8px; }
+    .rule-add-action:hover { background:#dde8ff; }
+    .rule-foot { display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-top:2px; }
   </style>
 </head>
 <body>
@@ -149,6 +229,11 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       <div class="lcd-row" id="lcd-row-2">&nbsp;</div>
       <div class="lcd-frame"></div>
     </div>
+    <div class="tabbar">
+      <button type="button" class="tab-btn on" data-tab="config" onclick="showTab('config')" data-i18n="tabConfig">Configuraci&oacute;n</button>
+      <button type="button" class="tab-btn" data-tab="rules" onclick="showTab('rules')" data-i18n="tabRules">&#9889; Reglas</button>
+    </div>
+    <div id="tab-config">
     <form method='POST' onsubmit="return validateForm();">
       <div class='mqtt-section'>
         <h2 data-i18n="mqttBroker">Broker MQTT</h2>
@@ -249,6 +334,18 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         <input type='submit' id="saveChangesBtn" value='Guardar cambios'>
       </div>
     </form>
+    </div>
+    <div class='section' id="tab-rules" style="display:none;">
+      <h2 data-i18n="rulesTitle">&#9889; Reglas / Disparadores</h2>
+      <div class="rules-intro" data-i18n="rulesIntro">Dispara acciones cuando se cumplen una o varias condiciones sobre las medidas (con persistencia anti-rebote). Cada regla puede publicar en un topic MQTT o llamar a una URL (webhook).</div>
+      <div class="rules-count-line"><span id="rules-count" class="rules-count"></span></div>
+      <div id="rules-list"></div>
+      <div class="rules-actions">
+        <button type="button" class="action-btn rules-add" onclick="rulesAdd()" data-i18n="ruleAdd">&#43; A&ntilde;adir regla</button>
+        <button type="button" class="action-btn rules-save" onclick="rulesSave()" data-i18n="ruleSave">&#128190; Guardar reglas</button>
+      </div>
+      <div id="rules-status"></div>
+    </div>
   </div>
   <script>
     var CURRENT_LANG = 'es';
@@ -268,7 +365,20 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         countingSince:"Contando energía desde hace:", wipeMemory:"Borrar memoria", resetDeviceBtn:"Resetear dispositivo",
         saveChanges:"Guardar cambios", connected:"(CONECTADO)", disconnected:"(NO CONECTADO)",
         confirmWipe:"¿Seguro que quieres borrar por completo la EEPROM?\nEsto restaurará todos los valores de fábrica y perderás la configuración.",
-        wipingEeprom:"Borrando EEPROM...", resettingDevice:"Reiniciando dispositivo...", checkNumbers:"Revisa los valores numéricos."
+        wipingEeprom:"Borrando EEPROM...", resettingDevice:"Reiniciando dispositivo...", checkNumbers:"Revisa los valores numéricos.",
+        tabConfig:"Configuración", tabRules:"&#9889; Reglas",
+        rulesTitle:"&#9889; Reglas / Disparadores",
+        rulesIntro:"Dispara acciones cuando se cumplen una o varias condiciones sobre las medidas (con persistencia anti-rebote). Cada regla puede publicar en un topic MQTT o llamar a una URL (webhook).",
+        ruleAdd:"&#43; Añadir regla", ruleSave:"&#128190; Guardar reglas", rulesSaved:"Reglas guardadas.", rulesSaveErr:"Error al guardar las reglas.",
+        rulesEmpty:"No hay reglas. Pulsa «Añadir regla» para crear una.", ruleName:"Nombre de la regla",
+        ruleEnabled:"Activada", ruleWhen:"Cuando", ruleAddCond:"+ condición", ruleAllHint:"se cumplen TODAS", ruleAnyHint:"se cumple ALGUNA",
+        ruleAnd:"Y (AND)", ruleOr:"O (OR)", ruleThen:"Entonces", ruleActMqtt:"Publicar MQTT", ruleActHook:"Webhook (URL)",
+        ruleTopic:"Topic MQTT", ruleUrl:"URL", ruleFire:"Mensaje al activarse", ruleClear:"Mensaje al limpiarse (opcional)",
+        ruleBody:"Cuerpo al activarse (opcional)", ruleBodyClear:"Cuerpo al limpiarse (opcional)",
+        ruleRetain:"Retenido", rulePost:"POST", ruleSamples:"Persistencia (lecturas)", ruleTest:"Probar ahora",
+        ruleMaxReached:"Máximo de reglas alcanzado.", ruleDelC:"Confirmar borrado de la regla",
+        ruleActionN:"Acción", ruleAddAction:"+ añadir acción", ruleActMaxReached:"Máximo de acciones por regla.",
+        opGt:"&gt;", opGe:"&ge;", opLt:"&lt;", opLe:"&le;", opEq:"="
       },
       en: {
         mqttBroker:"MQTT Broker", brokerIp:"MQTT broker IP or hostname:", clientName:"MQTT client name:",
@@ -285,7 +395,20 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         countingSince:"Counting energy since:", wipeMemory:"Wipe memory", resetDeviceBtn:"Reset device",
         saveChanges:"Save changes", connected:"(CONNECTED)", disconnected:"(NOT CONNECTED)",
         confirmWipe:"Are you sure you want to completely wipe the EEPROM?\nThis will restore all factory defaults and you will lose the configuration.",
-        wipingEeprom:"Wiping EEPROM...", resettingDevice:"Restarting device...", checkNumbers:"Please check the numeric values."
+        wipingEeprom:"Wiping EEPROM...", resettingDevice:"Restarting device...", checkNumbers:"Please check the numeric values.",
+        tabConfig:"Settings", tabRules:"&#9889; Rules",
+        rulesTitle:"&#9889; Rules / Triggers",
+        rulesIntro:"Fire actions when one or more conditions on the measurements are met (with anti-bounce persistence). Each rule can publish to an MQTT topic or call a URL (webhook).",
+        ruleAdd:"&#43; Add rule", ruleSave:"&#128190; Save rules", rulesSaved:"Rules saved.", rulesSaveErr:"Failed to save rules.",
+        rulesEmpty:"No rules yet. Click \"Add rule\" to create one.", ruleName:"Rule name",
+        ruleEnabled:"Enabled", ruleWhen:"When", ruleAddCond:"+ condition", ruleAllHint:"ALL are met", ruleAnyHint:"ANY is met",
+        ruleAnd:"AND", ruleOr:"OR", ruleThen:"Then", ruleActMqtt:"Publish MQTT", ruleActHook:"Webhook (URL)",
+        ruleTopic:"MQTT topic", ruleUrl:"URL", ruleFire:"Message on activate", ruleClear:"Message on clear (optional)",
+        ruleBody:"Body on activate (optional)", ruleBodyClear:"Body on clear (optional)",
+        ruleRetain:"Retained", rulePost:"POST", ruleSamples:"Persistence (readings)", ruleTest:"Test now",
+        ruleMaxReached:"Maximum number of rules reached.", ruleDelC:"Confirm deletion of rule",
+        ruleActionN:"Action", ruleAddAction:"+ add action", ruleActMaxReached:"Maximum actions per rule.",
+        opGt:"&gt;", opGe:"&ge;", opLt:"&lt;", opLe:"&le;", opEq:"="
       }
     };
     window.applyLang = function(lang){
@@ -301,12 +424,19 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       var lb = document.getElementById('langBtn'); if(lb) lb.textContent = (lang==='es'?'EN':'ES');
       CURRENT_LANG = lang;
       document.documentElement.lang = lang;
+      if (window.rulesRefreshLang) window.rulesRefreshLang();
       try { localStorage.setItem('mmt_lang', lang); } catch(e){}
     };
     window.toggleLang = function(){
       var nl = (CURRENT_LANG==='es'?'en':'es');
       applyLang(nl);                                  // translate the UI client-side (as before)
       try { fetch('/set_lang?lang='+nl); } catch(e){} // and persist it on the device (also drives the LCD)
+    };
+    window.showTab = function(name){
+      var panes = { config:'tab-config', rules:'tab-rules' };
+      for (var k in panes){ var el = document.getElementById(panes[k]); if (el) el.style.display = (k===name ? '' : 'none'); }
+      var btns = document.querySelectorAll('.tab-btn');
+      for (var i=0;i<btns.length;i++){ btns[i].classList.toggle('on', btns[i].getAttribute('data-tab')===name); }
     };
     document.addEventListener('DOMContentLoaded', function() {
       // The device-saved language (rendered server-side) is the source of truth,
@@ -421,6 +551,226 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       };
     });
   </script>
+  <script>
+    // Wrapped in a named function expression on purpose: arduino-cli's ctags step
+    // treats a bare top-level JS declaration inside this raw string as a C
+    // prototype and injects #line markers that corrupt the JS. An assignment form
+    // (var x = ...) is ignored by ctags, like the block above. Keep this comment
+    // free of C-like signatures for the same reason.
+    var rulesEditorInit = function(){
+    // ===== Rule engine editor =====
+    var RULES = [];
+    var RMAX = 6, RCONDS = 3;
+    var RMETRICS = [
+      {es:'Corriente', en:'Current', u:'A'},
+      {es:'Tensión', en:'Voltage', u:'V'},
+      {es:'Potencia', en:'Power', u:'W'},
+      {es:'Factor de potencia', en:'Power factor', u:''},
+      {es:'Frecuencia', en:'Frequency', u:'Hz'},
+      {es:'Carga ICP', en:'ICP load', u:'%'},
+      {es:'Energía', en:'Energy', u:'kWh'}
+    ];
+    var ROPS = ['&gt;','&ge;','&lt;','&le;','='];
+    function rt(k){ var d=I18N[CURRENT_LANG]||I18N.es; return d[k]!==undefined?d[k]:(I18N.es[k]||k); }
+    function resc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+    function rMetricLabel(v){ var m=RMETRICS[v]||RMETRICS[0]; return CURRENT_LANG==='en'?m.en:m.es; }
+    function rMetricUnit(v){ return (RMETRICS[v]||RMETRICS[0]).u; }
+    var RACTS=2;
+    function newAction(){ return {type:'mqtt',target:'',fire:'',clear:'',retain:true,post:false}; }
+    function rulesNew(){ return {enabled:true,name:'',combine:'and',samples:3,conds:[{metric:0,op:1,value:0}],acts:[newAction()]}; }
+
+    function rCondHTML(i,k,c,total){
+      var mopts='';
+      for(var m=0;m<RMETRICS.length;m++) mopts+='<option value="'+m+'"'+(m==c.metric?' selected':'')+'>'+resc(rMetricLabel(m))+'</option>';
+      var oopts='';
+      for(var o=0;o<ROPS.length;o++) oopts+='<option value="'+o+'"'+(o==c.op?' selected':'')+'>'+ROPS[o]+'</option>';
+      var del = total>1 ? '<button type="button" class="cond-del" onclick="rulesDelCond('+i+','+k+')" title="x">&#10005;</button>' : '';
+      return '<div class="cond-row">'
+        + '<select class="metric" onchange="rulesMetricChanged(this)">'+mopts+'</select>'
+        + '<select class="op">'+oopts+'</select>'
+        + '<input type="number" step="0.01" class="cval" value="'+resc(c.value)+'">'
+        + '<span class="unit">'+resc(rMetricUnit(c.metric))+'</span>'
+        + del + '</div>';
+    }
+
+    function rActionHTML(i,aIdx,act,total){
+      var isHook = act.type==='webhook';
+      var tabs='<div class="action-tabs">'
+        + '<button type="button" class="'+(!isHook?'on':'')+'" onclick="rulesSetActionType('+i+','+aIdx+',\'mqtt\')">'+rt('ruleActMqtt')+'</button>'
+        + '<button type="button" class="'+(isHook?'on':'')+'" onclick="rulesSetActionType('+i+','+aIdx+',\'webhook\')">'+rt('ruleActHook')+'</button>'
+        + '</div>';
+      var del = total>1 ? '<button type="button" class="act-del" onclick="rulesDelAction('+i+','+aIdx+')" title="x">&#10005;</button>' : '';
+      var fields;
+      if(!isHook){
+        fields='<div class="rule-field"><label>'+rt('ruleTopic')+'</label><input type="text" class="act-target" maxlength="95" value="'+resc(act.target)+'" placeholder="cmnd/calentador/Power"></div>'
+          +'<div class="rule-field-row">'
+          +'<div class="rule-field"><label>'+rt('ruleFire')+'</label><input type="text" class="act-fire" maxlength="63" value="'+resc(act.fire)+'" placeholder="OFF"></div>'
+          +'<div class="rule-field"><label>'+rt('ruleClear')+'</label><input type="text" class="act-clear" maxlength="63" value="'+resc(act.clear)+'" placeholder="ON"></div>'
+          +'</div>'
+          +'<div class="rule-opts"><label><input type="checkbox" class="act-retain"'+(act.retain?' checked':'')+'> '+rt('ruleRetain')+'</label></div>';
+      } else {
+        fields='<div class="rule-field"><label>'+rt('ruleUrl')+'</label><input type="text" class="act-target" maxlength="95" value="'+resc(act.target)+'" placeholder="http://192.168.1.x/..."></div>'
+          +'<div class="rule-field-row">'
+          +'<div class="rule-field"><label>'+rt('ruleBody')+'</label><input type="text" class="act-fire" maxlength="63" value="'+resc(act.fire)+'"></div>'
+          +'<div class="rule-field"><label>'+rt('ruleBodyClear')+'</label><input type="text" class="act-clear" maxlength="63" value="'+resc(act.clear)+'"></div>'
+          +'</div>'
+          +'<div class="rule-opts"><label><input type="checkbox" class="act-post"'+(act.post?' checked':'')+'> '+rt('rulePost')+'</label></div>';
+      }
+      return '<div class="rule-action" data-a="'+aIdx+'">'
+        + '<div class="act-head"><span class="act-num">'+rt('ruleActionN')+' '+(aIdx+1)+'</span>'+tabs+del+'</div>'
+        + fields + '</div>';
+    }
+
+    function rCardHTML(i,r){
+      var conds='';
+      for(var k=0;k<r.conds.length;k++) conds+=rCondHTML(i,k,r.conds[k],r.conds.length);
+      var combine='';
+      if(r.conds.length>=2){
+        combine='<span class="cond-join"><select class="combine">'
+          +'<option value="and"'+(r.combine==='and'?' selected':'')+'>'+rt('ruleAnd')+'</option>'
+          +'<option value="or"'+(r.combine==='or'?' selected':'')+'>'+rt('ruleOr')+'</option>'
+          +'</select></span>';
+      }
+      var addCond = r.conds.length<RCONDS ? '<button type="button" class="rule-mini-btn" onclick="rulesAddCond('+i+')">'+rt('ruleAddCond')+'</button>' : '';
+      var acts='';
+      for(var a=0;a<r.acts.length;a++) acts+=rActionHTML(i,a,r.acts[a],r.acts.length);
+      var addAct = r.acts.length<RACTS ? '<button type="button" class="rule-add-action" onclick="rulesAddAction('+i+')">'+rt('ruleAddAction')+'</button>' : '';
+      return '<div class="rule-card'+(r.enabled?'':' disabled')+'" data-idx="'+i+'">'
+        + '<div class="rule-head">'
+        +   '<input type="text" class="rname" maxlength="15" value="'+resc(r.name)+'" placeholder="'+rt('ruleName')+'">'
+        +   '<label class="sw"><input type="checkbox" class="renabled"'+(r.enabled?' checked':'')+' onchange="rulesToggle('+i+')"> '+rt('ruleEnabled')+'</label>'
+        +   '<button type="button" class="rule-del" onclick="rulesDel('+i+')" title="x">&#10005;</button>'
+        + '</div>'
+        + '<div class="rule-block"><div class="lbl">'+rt('ruleWhen')+'</div>'+conds
+        +   '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:4px;">'+addCond+combine+'</div>'
+        + '</div>'
+        + '<div class="rule-block"><div class="lbl">'+rt('ruleThen')+'</div>'+acts+addAct
+        +   '<div class="rule-foot">'
+        +     '<label>'+rt('ruleSamples')+' <input type="number" class="samples" min="1" max="20" value="'+(r.samples||3)+'"></label>'
+        +     '<button type="button" class="rule-test-btn" onclick="rulesTest('+i+')">'+rt('ruleTest')+'</button>'
+        +   '</div>'
+        + '</div>'
+        + '</div>';
+    }
+
+    function rulesRender(){
+      var box=document.getElementById('rules-list');
+      if(!box) return;
+      var cc=document.getElementById('rules-count');
+      if(cc){ cc.textContent=RULES.length+'/'+RMAX; cc.className='rules-count'+(RULES.length>=RMAX?' full':''); }
+      if(!RULES.length){ box.innerHTML='<div class="rules-intro">'+rt('rulesEmpty')+'</div>'; return; }
+      var html='';
+      for(var i=0;i<RULES.length;i++) html+=rCardHTML(i,RULES[i]);
+      box.innerHTML=html;
+    }
+
+    function rulesGather(){
+      var cards=document.querySelectorAll('#rules-list .rule-card');
+      var out=[];
+      for(var i=0;i<cards.length;i++){
+        var card=cards[i];
+        var r=RULES[i]||rulesNew();
+        var nEl=card.querySelector('.rname'); if(nEl) r.name=nEl.value.slice(0,15);
+        var eEl=card.querySelector('.renabled'); if(eEl) r.enabled=eEl.checked;
+        var cEl=card.querySelector('.combine'); if(cEl) r.combine=cEl.value;
+        var conds=[];
+        var rows=card.querySelectorAll('.cond-row');
+        for(var j=0;j<rows.length;j++){
+          conds.push({
+            metric:parseInt(rows[j].querySelector('.metric').value,10)||0,
+            op:parseInt(rows[j].querySelector('.op').value,10)||0,
+            value:parseFloat(rows[j].querySelector('.cval').value)||0
+          });
+        }
+        if(conds.length) r.conds=conds;
+        var acts=[];
+        var actEls=card.querySelectorAll('.rule-action');
+        for(var a=0;a<actEls.length;a++){
+          var ae=actEls[a];
+          var base=(r.acts&&r.acts[a])?r.acts[a]:newAction();
+          var tgt=ae.querySelector('.act-target'); if(tgt) base.target=tgt.value;
+          var fr=ae.querySelector('.act-fire'); if(fr) base.fire=fr.value;
+          var cl=ae.querySelector('.act-clear'); if(cl) base.clear=cl.value;
+          var rtEl=ae.querySelector('.act-retain'); if(rtEl) base.retain=rtEl.checked;
+          var pEl=ae.querySelector('.act-post'); if(pEl) base.post=pEl.checked;
+          acts.push(base);
+        }
+        if(acts.length) r.acts=acts;
+        var sEl=card.querySelector('.samples'); if(sEl) r.samples=Math.max(1,Math.min(20,parseInt(sEl.value,10)||3));
+        out.push(r);
+      }
+      RULES=out;
+    }
+
+    window.rulesMetricChanged=function(sel){
+      var row=sel.closest('.cond-row'); if(!row) return;
+      var u=row.querySelector('.unit'); if(u) u.innerHTML=resc(rMetricUnit(parseInt(sel.value,10)||0));
+    };
+    window.rulesToggle=function(i){ rulesGather(); rulesRender(); };
+    window.rulesAdd=function(){ rulesGather(); if(RULES.length>=RMAX){ rulesStatus(rt('ruleMaxReached'),'err'); return; } RULES.push(rulesNew()); rulesRender(); };
+    window.rulesDel=function(i){ rulesGather(); if(!confirm(rt('ruleDelC')+' #'+(i+1)+'?')) return; RULES.splice(i,1); rulesRender(); };
+    window.rulesAddCond=function(i){ rulesGather(); if(RULES[i]&&RULES[i].conds.length<RCONDS){ RULES[i].conds.push({metric:0,op:1,value:0}); rulesRender(); } };
+    window.rulesDelCond=function(i,k){ rulesGather(); if(RULES[i]){ RULES[i].conds.splice(k,1); if(!RULES[i].conds.length) RULES[i].conds.push({metric:0,op:1,value:0}); rulesRender(); } };
+    window.rulesAddAction=function(i){ rulesGather(); if(RULES[i]){ if(RULES[i].acts.length<RACTS){ RULES[i].acts.push(newAction()); rulesRender(); } else { rulesStatus(rt('ruleActMaxReached'),'err'); } } };
+    window.rulesDelAction=function(i,a){ rulesGather(); if(RULES[i]){ RULES[i].acts.splice(a,1); if(!RULES[i].acts.length) RULES[i].acts.push(newAction()); rulesRender(); } };
+    window.rulesSetActionType=function(i,a,t){ rulesGather(); if(RULES[i]&&RULES[i].acts[a]){ RULES[i].acts[a].type=t; rulesRender(); } };
+    window.rulesRefreshLang=function(){ if(!document.getElementById('rules-list')) return; rulesGather(); rulesRender(); };
+
+    function rulesStatus(msg,cls){ var s=document.getElementById('rules-status'); if(!s) return; s.textContent=msg; s.className=cls||''; }
+
+    window.rulesSave=function(){
+      rulesGather();
+      return fetch('/save_rules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(RULES)})
+        .then(function(r){ return r.json(); })
+        .then(function(j){ if(j&&j.ok){ rulesStatus(rt('rulesSaved'),'ok'); } else { rulesStatus(rt('rulesSaveErr'),'err'); } return j; })
+        .catch(function(){ rulesStatus(rt('rulesSaveErr'),'err'); return {ok:false}; });
+    };
+    window.rulesTest=function(i){
+      rulesGather();
+      var r=RULES[i]; if(!r) return;
+      var anyT=false; for(var a=0;a<r.acts.length;a++) if(r.acts[a].target) anyT=true;
+      if(!anyT){ rulesStatus('#'+(i+1)+' ?','err'); return; }
+      fetch('/rule_test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(r)})
+        .then(function(x){return x.json();})
+        .then(function(x){
+          if(!x||!x.ok){ rulesStatus('#'+(i+1)+' -','err'); return; }
+          var res=x.results||[], parts=[], okAll=true;
+          for(var a=0;a<res.length;a++){
+            var rr=res[a]||{};
+            if(rr.skipped){ parts.push('a'+(a+1)+':-'); }
+            else if(rr.type==='mqtt'){ parts.push('a'+(a+1)+':MQTT '+(rr.ok?'OK':'x')); if(!rr.ok) okAll=false; }
+            else { var good=(rr.code>0&&rr.code<400); parts.push('a'+(a+1)+':HTTP '+rr.code); if(!good) okAll=false; }
+          }
+          rulesStatus('#'+(i+1)+' '+parts.join('  '), okAll?'ok':'err');
+        })
+        .catch(function(){ rulesStatus(rt('rulesSaveErr'),'err'); });
+    };
+
+    function rulesLoad(){
+      fetch('/json_rules').then(function(r){ return r.json(); }).then(function(arr){
+        RULES=[];
+        if(Array.isArray(arr)){
+          for(var i=0;i<arr.length;i++){
+            var o=arr[i]||{};
+            var hasActs=o.acts&&o.acts.length;
+            if(!o.enabled && !(o.conds&&o.conds.length) && !hasActs) continue; // skip empty slots
+            var acts=[];
+            if(hasActs){ for(var a=0;a<o.acts.length;a++){ var ao=o.acts[a]||{}; acts.push({type:ao.type==='webhook'?'webhook':'mqtt',target:ao.target||'',fire:ao.fire||'',clear:ao.clear||'',retain:!!ao.retain,post:!!ao.post}); } }
+            if(!acts.length) acts=[newAction()];
+            RULES.push({
+              enabled:!!o.enabled, name:o.name||'', combine:o.combine==='or'?'or':'and',
+              samples:o.samples||3, conds:(o.conds&&o.conds.length)?o.conds:[{metric:0,op:1,value:0}],
+              acts:acts
+            });
+          }
+        }
+        rulesRender();
+      }).catch(function(){ rulesRender(); });
+    }
+    document.addEventListener('DOMContentLoaded', rulesLoad);
+    };
+    rulesEditorInit();
+  </script>
 </body>
 </html>
 )rawliteral";
@@ -502,6 +852,54 @@ static const int MIN_CURVE_TIME_S = 1, MAX_CURVE_TIME_S = 7200;
 static const float MIN_VOLTAGE_LIMIT = 0.0f, MAX_VOLTAGE_LIMIT = 300.0f;
 static const float MAX_CONSUMO_VAL = 10000.0f;
 
+// ================== RULE ENGINE ================
+// User-configurable event triggers (a native replacement for the external
+// calentador.py hysteresis controller). Each rule = 1..MAX_CONDS conditions
+// combined with AND/OR, plus an action (publish MQTT topic or call a webhook)
+// fired on the rising edge, and an optional action on the falling edge.
+#define MAX_RULES 6
+#define MAX_CONDS 3
+#define MAX_ACTIONS 2
+#define RULES_MAGIC 0x53   // marks a rules table written by this firmware (0x53: multi-action layout)
+
+enum RuleMetric : uint8_t {
+  RM_CURRENT = 0,  // A
+  RM_VOLTAGE = 1,  // V
+  RM_POWER   = 2,  // W
+  RM_PF      = 3,  // factor de potencia (0..1)
+  RM_FREQ    = 4,  // Hz
+  RM_ICP     = 5,  // % carga ICP
+  RM_ENERGY  = 6,  // kWh
+  RM_COUNT   = 7
+};
+enum RuleOp : uint8_t { RO_GT = 0, RO_GE = 1, RO_LT = 2, RO_LE = 3, RO_EQ = 4, RO_COUNT = 5 };
+enum RuleCombine : uint8_t { RC_AND = 0, RC_OR = 1 };
+enum RuleAction  : uint8_t { RA_MQTT = 0, RA_WEBHOOK = 1 };
+// Three-valued predicate result: a metric that is NaN this cycle is UNKNOWN, not
+// false, so an OR rule still fires on an already-true operand and no edge fires
+// on undetermined state.
+enum RuleEval : uint8_t { RE_FALSE = 0, RE_TRUE = 1, RE_UNKNOWN = 2 };
+
+#define RULE_FLAG_RETAIN 0x01  // MQTT publish retained
+#define RULE_FLAG_POST   0x02  // webhook uses POST (else GET)
+
+static const uint8_t RULE_MIN_SAMPLES = 1, RULE_MAX_SAMPLES = 20, RULE_DEF_SAMPLES = 3;
+static const float   RULE_EQ_EPSILON = 0.05f;   // absolute floor for the '==' operator
+static const float   RULE_EQ_REL     = 0.005f;  // + 0.5% relative, so '==' scales with the metric
+static const int     WEBHOOK_TIMEOUT_MS = 3000; // per webhook request (blocks only on a rule edge)
+// Sentinel returned by fireWebhook when it did NOT attempt a network request
+// (WiFi down / low heap): a transient skip that must be retried without
+// consuming the per-cycle webhook budget (distinct from an attempted request
+// that returned an HTTP status or a small-negative HTTPClient error).
+static const int     WEBHOOK_DEFER = -1000;
+// Robustness caps for the (blocking) webhook path so a rule edge cannot freeze
+// the cooperative loop or exhaust the heap:
+#define WEBHOOK_MAX_PER_CYCLE 1                          // at most 1 webhook fired per evaluateRules() pass; rest deferred
+static const int      WEBHOOK_TLS_RX = 4096;             // TLS rx buffer: must fit the server's certificate record (1024 was too small)
+static const int      WEBHOOK_TLS_TX = 512;
+static const uint32_t WEBHOOK_HTTPS_MIN_HEAP = 20000;    // skip HTTPS if free heap below this (BearSSL needs ~16KB)
+static const size_t   SAVE_RULES_MAX_BODY = 8000;        // reject oversized /save_rules bodies (bounds parse work)
+
 // ================== MQTT TOPICS =================
 #define MQTT_TOPIC_STATE "electricidad/casa/estado"
 #define MQTT_TOPIC_ICP_RECOVERY "electricidad/casa/icp"
@@ -514,6 +912,36 @@ struct MonthlyData {
   uint8_t month;
   uint16_t year;
   float energy_kWh;
+};
+
+// One condition of a rule: metric <op> value (e.g. corriente >= 28).
+struct RuleCond {
+  uint8_t metric;   // RuleMetric
+  uint8_t op;       // RuleOp
+  float   value;
+};
+
+// One action of a rule (MQTT publish or webhook call). 226 bytes each.
+struct RuleActionDef {
+  uint8_t type;                // RuleAction (RA_MQTT / RA_WEBHOOK)
+  uint8_t flags;              // RULE_FLAG_* (retain for MQTT, POST for webhook)
+  char target[96];            // MQTT topic OR webhook URL
+  char fire[64];              // MQTT message / webhook body sent when the rule activates
+  char clear[64];             // sent when it clears (empty = do nothing on clear)
+};
+
+// A configurable event trigger. ~500 bytes each; MAX_RULES of them live in the
+// persistent config (RAM + EEPROM). Each rule now fires up to MAX_ACTIONS
+// actions on an edge.
+struct Rule {
+  uint8_t enabled;
+  uint8_t combine;              // RuleCombine (how the conditions are joined)
+  uint8_t samples;             // consecutive readings before firing (persistence)
+  uint8_t condCount;           // 0..MAX_CONDS
+  uint8_t actCount;            // 0..MAX_ACTIONS
+  RuleCond conds[MAX_CONDS];
+  char name[16];               // short label for the UI / logs
+  RuleActionDef acts[MAX_ACTIONS];
 };
 
 struct AppConfig {
@@ -547,7 +975,21 @@ struct AppConfig {
   // EEPROM offset, so existing configs/energy history survive the upgrade
   // without a CONFIG_VERSION bump. Garbage from old EEPROM is clamped in loadConfig().
   uint8_t lcdLang;
+
+  // Rule engine, also appended without a version bump (see loadConfig): an
+  // older config has garbage here, guarded by rulesMagic.
+  Rule rules[MAX_RULES];
+  uint8_t rulesMagic;
 };
+
+// Layout guards: the append-without-version-bump migration is only safe while
+// every field BEFORE `rules` keeps its offset and the struct fits one EEPROM
+// sector. If a future edit breaks either, this fails the BUILD instead of
+// silently corrupting deployed configs + energy history. (Offsets are the
+// ground-truth values from the xtensa target compiler; time_t is 8 bytes here.)
+static_assert(sizeof(AppConfig) <= 4096, "AppConfig exceeds one EEPROM sector (4096 B)");
+static_assert(offsetof(AppConfig, lcdLang) == 340, "AppConfig layout drifted before rules; bump CONFIG_VERSION");
+static_assert(offsetof(AppConfig, rules) == 344, "rules[] offset moved; EEPROM migration is unsafe");
 
 // ================== LCD TEXT & ALERTS ==========
 struct LCDLines {
@@ -573,6 +1015,27 @@ float voltage = NAN, current = NAN, power = NAN, energy = NAN, powerFactor = NAN
 
 // Last evaluated alert state, so /json and MQTT can report active alerts
 AlertState lastAlert = { false, "", "", false, false, false, false };
+
+// Rule engine runtime state (kept out of the persisted config): the latched
+// on/off state of each rule and its persistence counter (counts toward whichever
+// edge is pending).
+//
+// KNOWN LIMITATIONS (documented on purpose, not bugs):
+//  1) The latch is RAM-only. After a reboot/OTA a rule re-evaluates from scratch,
+//     so a still-true condition re-fires its activate action once (idempotent for
+//     retained MQTT; a non-idempotent webhook would run again). Persisting the
+//     latch was rejected to avoid EEPROM wear.
+//  2) Rules share the single EEPROM blob (AppConfig) with the 24-month energy
+//     history, so a power loss during a /save_rules commit could, worst case,
+//     corrupt the blob and reset it to defaults (losing history). Splitting the
+//     history into its own CRC-guarded sector is future work.
+bool ruleLatch[MAX_RULES] = { false };
+uint8_t ruleSampleCount[MAX_RULES] = { 0 };
+// Multi-action delivery state: bitmask of actions still to deliver for the
+// in-progress edge, and whether those pending actions are the CLEAR payloads.
+// The latch flips at edge-commit; these drive per-action delivery/retry after.
+uint8_t ruleActPending[MAX_RULES] = { 0 };
+bool ruleActClearEdge[MAX_RULES] = { false };
 
 float icpCarga = 0.0f;
 unsigned long lastIcpMillis = 0;
@@ -672,6 +1135,9 @@ void setDefaults() {
   config.currentYear = 0;
 
   config.lcdLang = DEF_LCD_LANG;
+
+  memset(config.rules, 0, sizeof(config.rules));
+  config.rulesMagic = RULES_MAGIC;
 }
 
 void saveConfig() {
@@ -719,6 +1185,39 @@ void loadConfig() {
   // by older firmware has a garbage byte here. Clamp it to the default instead
   // of wiping the whole config (which would lose the energy history).
   if (config.lcdLang > LANG_EN) config.lcdLang = DEF_LCD_LANG;
+
+  // Rules table, likewise appended without a version bump. A config from older
+  // firmware has garbage here: if the marker is absent, start with an empty
+  // table instead of wiping the whole config.
+  if (config.rulesMagic != RULES_MAGIC) {
+    memset(config.rules, 0, sizeof(config.rules));
+    config.rulesMagic = RULES_MAGIC;
+  } else {
+    // Defensive clamp against EEPROM corruption: keep enums in range, ensure
+    // strings are terminated, and disable any rule that no longer makes sense.
+    for (uint8_t i = 0; i < MAX_RULES; i++) {
+      Rule &r = config.rules[i];
+      if (r.condCount > MAX_CONDS) r.condCount = MAX_CONDS;
+      if (r.actCount > MAX_ACTIONS) r.actCount = MAX_ACTIONS;
+      if (r.combine > RC_OR) r.combine = RC_AND;
+      if (r.samples < RULE_MIN_SAMPLES || r.samples > RULE_MAX_SAMPLES) r.samples = RULE_DEF_SAMPLES;
+      for (uint8_t k = 0; k < r.condCount; k++) {
+        if (r.conds[k].metric >= RM_COUNT) r.conds[k].metric = RM_CURRENT;
+        if (r.conds[k].op >= RO_COUNT) r.conds[k].op = RO_GT;
+      }
+      r.name[sizeof(r.name) - 1] = '\0';
+      bool hasTarget = false;
+      for (uint8_t a = 0; a < MAX_ACTIONS; a++) {
+        RuleActionDef &act = r.acts[a];
+        if (act.type > RA_WEBHOOK) act.type = RA_MQTT;
+        act.target[sizeof(act.target) - 1] = '\0';
+        act.fire[sizeof(act.fire) - 1] = '\0';
+        act.clear[sizeof(act.clear) - 1] = '\0';
+        if (a < r.actCount && act.target[0] != '\0') hasTarget = true;
+      }
+      if (r.enabled && (r.condCount == 0 || r.actCount == 0 || !hasTarget)) r.enabled = 0;
+    }
+  }
 }
 
 // ================== WIFI =======================
@@ -1479,6 +1978,224 @@ void publishAllMQTT() {
   }
 }
 
+// ================== RULE ENGINE ================
+// Resolves a rule metric to its current value. Returns false if the reading is
+// not valid yet (NaN), so a rule never fires/clears on a bad PZEM sample.
+static bool ruleMetricValue(uint8_t metric, float &out) {
+  float v;
+  switch (metric) {
+    case RM_CURRENT: v = current; break;
+    case RM_VOLTAGE: v = voltage; break;
+    case RM_POWER:   v = power; break;
+    case RM_PF:      v = powerFactor; break;
+    case RM_FREQ:    v = frequency; break;
+    case RM_ICP:     v = icpCarga; break;
+    case RM_ENERGY:  v = energy; break;
+    default: return false;
+  }
+  if (isnan(v)) return false;
+  out = v;
+  return true;
+}
+
+static bool ruleCondEval(const RuleCond &c, float v) {
+  switch (c.op) {
+    case RO_GT: return v >  c.value;
+    case RO_GE: return v >= c.value;
+    case RO_LT: return v <  c.value;
+    case RO_LE: return v <= c.value;
+    // '==' tolerance scales with the metric (0.5% relative, 0.05 absolute floor)
+    // so it is usable on both small metrics (PF 0..1) and large ones (power in W).
+    case RO_EQ: {
+      float tol = fabsf(c.value) * RULE_EQ_REL;
+      if (tol < RULE_EQ_EPSILON) tol = RULE_EQ_EPSILON;
+      return fabsf(v - c.value) <= tol;
+    }
+  }
+  return false;
+}
+
+// URL-encodes src into dst (dst always NUL-terminated). Used to carry a GET
+// webhook's payload as a query parameter so activate/clear are distinguishable.
+static void urlEncodeInto(const char* src, char* dst, size_t n) {
+  static const char hex[] = "0123456789ABCDEF";
+  size_t o = 0;
+  for (; *src && o + 4 < n; ++src) {
+    char c = *src;
+    if (isalnum((unsigned char)c) || c == '-' || c == '_' || c == '.' || c == '~') {
+      dst[o++] = c;
+    } else {
+      dst[o++] = '%'; dst[o++] = hex[(c >> 4) & 0xF]; dst[o++] = hex[c & 0xF];
+    }
+  }
+  dst[o] = '\0';
+}
+
+// Fires an outbound webhook. Blocks up to WEBHOOK_TIMEOUT_MS per phase, but the
+// caller fires at most WEBHOOK_MAX_PER_CYCLE of these per loop pass so the
+// cooperative loop is never frozen for long. HTTPS uses setInsecure() (no cert
+// validation) with a rx buffer large enough for a real certificate record, and
+// is skipped when free heap is low (BearSSL needs ~16KB transient).
+// Returns the HTTP status (positive) or HTTPClient error (small negative) when a
+// request was actually attempted; returns WEBHOOK_DEFER when it did NOT attempt
+// (WiFi down / low heap) so the caller retries cheaply without spending budget.
+int fireWebhook(const char* url, bool post, const char* body) {
+  if (!wifiOk || url[0] == '\0') return WEBHOOK_DEFER;
+  bool https = (strncmp_P(url, PSTR("https"), 5) == 0);
+  if (https && ESP.getFreeHeap() < WEBHOOK_HTTPS_MIN_HEAP) {
+    logMessage(F("[RULE] webhook HTTPS skipped (low heap)"));
+    return WEBHOOK_DEFER;  // retry when heap recovers
+  }
+
+  // For GET, carry the payload as a ?msg= query so activate/clear differ.
+  const char* finalUrl = url;
+  char urlbuf[320];
+  if (!post && body[0] != '\0') {
+    char enc[193];
+    urlEncodeInto(body, enc, sizeof(enc));
+    snprintf(urlbuf, sizeof(urlbuf), "%s%cmsg=%s", url, strchr(url, '?') ? '&' : '?', enc);
+    finalUrl = urlbuf;
+  }
+
+  HTTPClient http;
+  http.setTimeout(WEBHOOK_TIMEOUT_MS);
+  http.setReuse(false);
+  int code = 0;  // begin-fail leaves 0: an attempted-but-failed result, not DEFER
+  if (https) {
+    WiFiClientSecure sclient;
+    sclient.setInsecure();
+    sclient.setBufferSizes(WEBHOOK_TLS_RX, WEBHOOK_TLS_TX);
+    sclient.setTimeout(WEBHOOK_TIMEOUT_MS);
+    if (http.begin(sclient, finalUrl)) {
+      if (post) { http.addHeader(F("Content-Type"), F("application/json")); code = http.POST((uint8_t*)body, strlen(body)); }
+      else code = http.GET();
+      http.end();
+    }
+  } else {
+    WiFiClient client;
+    client.setTimeout(WEBHOOK_TIMEOUT_MS);
+    if (http.begin(client, finalUrl)) {
+      if (post) { http.addHeader(F("Content-Type"), F("application/json")); code = http.POST((uint8_t*)body, strlen(body)); }
+      else code = http.GET();
+      http.end();
+    }
+  }
+  char buf[48];
+  snprintf(buf, sizeof(buf), "[RULE] webhook %s -> %d", post ? "POST" : "GET", code);
+  logMessage(buf);
+  return code;
+}
+
+static void logRuleEdge(const Rule &r, bool clearEdge) {
+  char buf[48];
+  snprintf(buf, sizeof(buf), "[RULE] '%s' %s", r.name[0] ? r.name : "?", clearEdge ? "LIMPIADA" : "ACTIVADA");
+  logMessage(buf);
+}
+
+// Delivers rule i's still-pending actions for the current in-progress edge.
+// MQTT actions retry every cycle until published (cheap, non-blocking); webhook
+// actions fire ONCE (the bit is cleared whether the call succeeded or not, to
+// avoid re-blocking the loop) and are rate-limited to `webhookBudget` real
+// attempts per cycle. A transient webhook skip (WEBHOOK_DEFER: WiFi/heap) keeps
+// the bit and spends no budget, so it is retried without starving other rules.
+static void serviceRulePending(uint8_t i, Rule &r, uint8_t &webhookBudget) {
+  bool clearEdge = ruleActClearEdge[i];
+  for (uint8_t a = 0; a < r.actCount && a < MAX_ACTIONS; a++) {
+    uint8_t bit = (uint8_t)(1 << a);
+    if (!(ruleActPending[i] & bit)) continue;
+    RuleActionDef &act = r.acts[a];
+    const char* payload = clearEdge ? act.clear : act.fire;
+    if (act.target[0] == '\0') { ruleActPending[i] &= ~bit; continue; }  // nothing to do
+    if (act.type == RA_MQTT) {
+      if (mqttClient.connected() &&
+          mqttClient.publish(act.target, payload, (bool)(act.flags & RULE_FLAG_RETAIN))) {
+        ruleActPending[i] &= ~bit;  // delivered
+      }
+      // else broker down -> keep bit, retry next cycle
+    } else {  // RA_WEBHOOK: fire once, budget-limited
+      if (webhookBudget == 0) continue;  // defer this webhook to a later cycle
+      int code = fireWebhook(act.target, (act.flags & RULE_FLAG_POST), payload);
+      if (code == WEBHOOK_DEFER) continue;   // transient: keep bit, spend no budget
+      webhookBudget--;                        // a real (blocking) attempt happened
+      ruleActPending[i] &= ~bit;              // fire-once regardless of HTTP result
+    }
+  }
+}
+
+// Three-valued evaluation of a rule's conditions (see RuleEval). A NaN metric is
+// UNKNOWN, so OR short-circuits to TRUE on any true operand regardless of NaN
+// elsewhere, and AND short-circuits to FALSE on any false operand.
+static RuleEval evalRulePredicate(const Rule &r) {
+  if (r.condCount == 0) return RE_FALSE;  // defensive: an empty rule never fires
+  bool anyTrue = false, anyFalse = false, anyUnknown = false;
+  for (uint8_t k = 0; k < r.condCount && k < MAX_CONDS; k++) {
+    float v;
+    if (!ruleMetricValue(r.conds[k].metric, v)) { anyUnknown = true; continue; }
+    if (ruleCondEval(r.conds[k], v)) anyTrue = true; else anyFalse = true;
+  }
+  if (r.combine == RC_AND) {
+    if (anyFalse) return RE_FALSE;
+    if (anyUnknown) return RE_UNKNOWN;
+    return RE_TRUE;
+  }
+  // RC_OR
+  if (anyTrue) return RE_TRUE;
+  if (anyUnknown) return RE_UNKNOWN;
+  return RE_FALSE;
+}
+
+// Evaluates every enabled rule once per cycle. Edge detection (unchanged, audited
+// correct): `samples` consecutive TRUE readings to activate and `samples`
+// consecutive FALSE to clear; UNKNOWN (NaN) holds both latch and counter. On a
+// committed edge the latch flips and ALL of the rule's actions are marked pending
+// (clear edge: only actions with a clear payload). Pending actions are then
+// delivered by serviceRulePending across this and subsequent cycles. The webhook
+// budget is capped per cycle and the start index rotates each pass so a webhook
+// rule cannot starve the others.
+void evaluateRules() {
+  static uint8_t startIdx = 0;
+  uint8_t webhookBudget = WEBHOOK_MAX_PER_CYCLE;
+  for (uint8_t n = 0; n < MAX_RULES; n++) {
+    uint8_t i = (uint8_t)((startIdx + n) % MAX_RULES);
+    Rule &r = config.rules[i];
+    if (!r.enabled || r.condCount == 0 || r.actCount == 0) {
+      ruleLatch[i] = false; ruleSampleCount[i] = 0; ruleActPending[i] = 0; continue;
+    }
+
+    // Finish delivering an in-progress edge before evaluating a new one.
+    if (ruleActPending[i]) { serviceRulePending(i, r, webhookBudget); continue; }
+
+    RuleEval ev = evalRulePredicate(r);
+    if (ev == RE_UNKNOWN) continue;  // hold latch AND counter on undetermined state
+
+    uint8_t need = r.samples ? r.samples : 1;
+    if (ev == RE_TRUE) {
+      if (ruleLatch[i]) { ruleSampleCount[i] = 0; continue; }  // already active; cancel pending clear buildup
+      if (ruleSampleCount[i] < need) ruleSampleCount[i]++;
+      if (ruleSampleCount[i] >= need) {
+        // Commit ACTIVATE edge: latch on, every action pending.
+        ruleLatch[i] = true; ruleSampleCount[i] = 0; ruleActClearEdge[i] = false;
+        ruleActPending[i] = (uint8_t)((1 << r.actCount) - 1);
+        logRuleEdge(r, false);
+        serviceRulePending(i, r, webhookBudget);
+      }
+    } else {  // RE_FALSE
+      if (!ruleLatch[i]) { ruleSampleCount[i] = 0; continue; }  // already inactive; cancel pending fire buildup
+      if (ruleSampleCount[i] < need) ruleSampleCount[i]++;
+      if (ruleSampleCount[i] >= need) {
+        // Commit CLEAR edge: latch off; only actions with a clear payload fire.
+        ruleLatch[i] = false; ruleSampleCount[i] = 0; ruleActClearEdge[i] = true;
+        uint8_t mask = 0;
+        for (uint8_t a = 0; a < r.actCount && a < MAX_ACTIONS; a++)
+          if (r.acts[a].clear[0] != '\0') mask |= (uint8_t)(1 << a);
+        ruleActPending[i] = mask;
+        if (mask) { logRuleEdge(r, true); serviceRulePending(i, r, webhookBudget); }
+      }
+    }
+  }
+  startIdx = (uint8_t)((startIdx + 1) % MAX_RULES);
+}
+
 void readSensorsAndTriggerAlerts() {
   static bool once = false;
   if (!publicarListo) {
@@ -1525,7 +2242,10 @@ void readSensorsAndTriggerAlerts() {
 
   renderLCD();
 
-  // 6) MQTT
+  // 6) Rule engine (event triggers -> MQTT publish / webhook)
+  evaluateRules();
+
+  // 7) MQTT
   publishAllMQTT();
 }
 
@@ -1912,6 +2632,194 @@ void handleJsonAlerts() {
   server.send(200, "application/json; charset=utf-8", out);
 }
 
+// --- /json_rules --- current rule table, consumed by the web editor.
+void handleJsonRules() {
+  DynamicJsonDocument doc(8192);
+  JsonArray arr = doc.to<JsonArray>();
+  for (uint8_t i = 0; i < MAX_RULES; i++) {
+    Rule &r = config.rules[i];
+    JsonObject o = arr.createNestedObject();
+    o["enabled"] = (bool)r.enabled;
+    o["name"]    = r.name;
+    o["combine"] = (r.combine == RC_OR) ? "or" : "and";
+    o["samples"] = r.samples ? r.samples : RULE_DEF_SAMPLES;
+    JsonArray cs = o.createNestedArray("conds");
+    for (uint8_t k = 0; k < r.condCount && k < MAX_CONDS; k++) {
+      JsonObject c = cs.createNestedObject();
+      c["metric"] = r.conds[k].metric;
+      c["op"]     = r.conds[k].op;
+      c["value"]  = r.conds[k].value;
+    }
+    JsonArray as = o.createNestedArray("acts");
+    for (uint8_t a = 0; a < r.actCount && a < MAX_ACTIONS; a++) {
+      RuleActionDef &act = r.acts[a];
+      JsonObject ao = as.createNestedObject();
+      ao["type"]   = (act.type == RA_WEBHOOK) ? "webhook" : "mqtt";
+      ao["target"] = act.target;
+      ao["fire"]   = act.fire;
+      ao["clear"]  = act.clear;
+      ao["retain"] = (bool)(act.flags & RULE_FLAG_RETAIN);
+      ao["post"]   = (bool)(act.flags & RULE_FLAG_POST);
+    }
+  }
+  String out;
+  serializeJson(doc, out);
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json; charset=utf-8", out);
+}
+
+// Fills one RuleActionDef from a JSON object, clamping every field.
+static void parseActionFromJson(JsonObject ao, RuleActionDef &act) {
+  memset(&act, 0, sizeof(act));
+  act.type = (strcmp(ao["type"] | "mqtt", "webhook") == 0) ? RA_WEBHOOK : RA_MQTT;
+  strlcpy(act.target, ao["target"] | "", sizeof(act.target));
+  strlcpy(act.fire,   ao["fire"]   | "", sizeof(act.fire));
+  strlcpy(act.clear,  ao["clear"]  | "", sizeof(act.clear));
+  act.flags = 0;
+  if (ao["retain"] | false) act.flags |= RULE_FLAG_RETAIN;
+  if (ao["post"]   | false) act.flags |= RULE_FLAG_POST;
+}
+
+// Fills one Rule from a JSON object, clamping every field into range. Shared by
+// /save_rules and /rule_test so both parse identically.
+static void parseRuleFromJson(JsonObject o, Rule &r) {
+  memset(&r, 0, sizeof(r));
+  bool en = o["enabled"] | false;
+  r.enabled = en ? 1 : 0;
+  strlcpy(r.name, o["name"] | "", sizeof(r.name));
+  r.combine = (strcmp(o["combine"] | "and", "or") == 0) ? RC_OR : RC_AND;
+  int s = o["samples"] | (int)RULE_DEF_SAMPLES;
+  if (s < RULE_MIN_SAMPLES) s = RULE_MIN_SAMPLES;
+  if (s > RULE_MAX_SAMPLES) s = RULE_MAX_SAMPLES;
+  r.samples = (uint8_t)s;
+  uint8_t k = 0;
+  for (JsonObject c : o["conds"].as<JsonArray>()) {
+    if (k >= MAX_CONDS) break;
+    int m  = c["metric"] | 0; if (m < 0 || m >= RM_COUNT) m = 0;
+    int op = c["op"] | 0;     if (op < 0 || op >= RO_COUNT) op = 0;
+    float cv = c["value"] | 0.0f; if (!isfinite(cv)) cv = 0.0f;  // reject inf/nan thresholds
+    r.conds[k].metric = (uint8_t)m;
+    r.conds[k].op     = (uint8_t)op;
+    r.conds[k].value  = cv;
+    k++;
+  }
+  r.condCount = k;
+  uint8_t na = 0;
+  bool hasTarget = false;
+  for (JsonObject ao : o["acts"].as<JsonArray>()) {
+    if (na >= MAX_ACTIONS) break;
+    parseActionFromJson(ao, r.acts[na]);
+    if (r.acts[na].target[0] != '\0') hasTarget = true;
+    na++;
+  }
+  r.actCount = na;
+  if (r.enabled && (r.condCount == 0 || r.actCount == 0 || !hasTarget)) r.enabled = 0;
+}
+
+// Logical equality of two rules (ignores struct padding, which differs between
+// an EEPROM-loaded rule and a freshly-parsed one). Used to decide which latches
+// to reset on save. Thresholds compared with a tiny tolerance so a float that
+// merely round-tripped through JSON is not seen as "changed".
+static bool rulesEqual(const Rule &a, const Rule &b) {
+  if (a.enabled != b.enabled || a.combine != b.combine || a.samples != b.samples ||
+      a.condCount != b.condCount || a.actCount != b.actCount) return false;
+  for (uint8_t k = 0; k < a.condCount && k < MAX_CONDS; k++) {
+    if (a.conds[k].metric != b.conds[k].metric || a.conds[k].op != b.conds[k].op) return false;
+    if (fabsf(a.conds[k].value - b.conds[k].value) > fabsf(a.conds[k].value) * 1e-5f + 1e-5f) return false;
+  }
+  for (uint8_t x = 0; x < a.actCount && x < MAX_ACTIONS; x++) {
+    if (a.acts[x].type != b.acts[x].type || a.acts[x].flags != b.acts[x].flags) return false;
+    if (strcmp(a.acts[x].target, b.acts[x].target) != 0 ||
+        strcmp(a.acts[x].fire, b.acts[x].fire) != 0 ||
+        strcmp(a.acts[x].clear, b.acts[x].clear) != 0) return false;
+  }
+  return strcmp(a.name, b.name) == 0;
+}
+
+// CSRF guard for the rule endpoints: the editor always sends application/json,
+// a non-simple content type that forces a CORS preflight a cross-origin page
+// cannot complete. Rejecting anything else stops a drive-by page (on a browser
+// that is on this LAN) from POSTing rules or firing test actions.
+static bool rulesContentTypeOk() {
+  return server.header("Content-Type").startsWith("application/json");
+}
+
+// --- /save_rules (POST) --- replaces the whole rule table from the editor.
+void handleSaveRules() {
+  if (!rulesContentTypeOk()) { server.send(415, "application/json", "{\"ok\":false,\"error\":\"content-type\"}"); return; }
+  if (!server.hasArg("plain")) { server.send(400, "application/json", "{\"ok\":false,\"error\":\"no body\"}"); return; }
+  String body = server.arg("plain");
+  // NOTE: ESP8266WebServer has already buffered the whole body before this
+  // handler runs, so this cap only bounds parse work, not peak memory — there is
+  // no framework hook to reject an oversized body earlier.
+  if (body.length() > SAVE_RULES_MAX_BODY) { server.send(413, "application/json", "{\"ok\":false,\"error\":\"too big\"}"); return; }
+  DynamicJsonDocument doc(8192);
+  DeserializationError err = deserializeJson(doc, body);
+  if (err || !doc.is<JsonArray>()) { server.send(400, "application/json", "{\"ok\":false,\"error\":\"json\"}"); return; }
+
+  // Parse and store ONE rule at a time (a full 6-rule snapshot would be ~3KB on
+  // the ~4KB stack). For each slot, reset the runtime state only if the rule's
+  // definition actually changed, so editing one rule cannot swallow another
+  // rule's pending activate/clear.
+  uint8_t i = 0;
+  for (JsonObject o : doc.as<JsonArray>()) {
+    if (i >= MAX_RULES) break;
+    Rule nr;
+    parseRuleFromJson(o, nr);
+    if (!rulesEqual(config.rules[i], nr)) {
+      ruleLatch[i] = false; ruleSampleCount[i] = 0; ruleActPending[i] = 0;
+    }
+    config.rules[i] = nr;
+    i++;
+  }
+  // Zero any remaining slots, resetting their runtime state if they had content.
+  for (; i < MAX_RULES; i++) {
+    Rule &r = config.rules[i];
+    if (r.enabled || r.condCount || r.actCount) {
+      ruleLatch[i] = false; ruleSampleCount[i] = 0; ruleActPending[i] = 0;
+    }
+    memset(&r, 0, sizeof(Rule));
+  }
+  config.rulesMagic = RULES_MAGIC;
+  saveConfig();
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
+// --- /rule_test (POST) --- fires ALL of ONE rule's actions, taken from the
+// posted rule JSON (not the saved table), so testing neither rewrites EEPROM nor
+// disturbs the live latches. ?edge=clear tests the falling actions. Reports the
+// real per-action result (MQTT ok / actual HTTP code). CSRF-guarded.
+void handleRuleTest() {
+  if (server.method() != HTTP_POST || !rulesContentTypeOk()) { server.send(415, "application/json", "{\"ok\":false}"); return; }
+  if (!server.hasArg("plain")) { server.send(400, "application/json", "{\"ok\":false}"); return; }
+  DynamicJsonDocument doc(1536);  // heap, not stack (Rule r below is already ~500B of stack)
+  if (deserializeJson(doc, server.arg("plain")) || !doc.is<JsonObject>()) { server.send(400, "application/json", "{\"ok\":false}"); return; }
+  Rule r;
+  parseRuleFromJson(doc.as<JsonObject>(), r);
+  bool fire = !(server.arg("edge") == "clear");
+  if (r.actCount == 0) { server.send(400, "application/json", "{\"ok\":false}"); return; }
+
+  String out = "{\"ok\":true,\"results\":[";
+  for (uint8_t a = 0; a < r.actCount && a < MAX_ACTIONS; a++) {
+    if (a) out += ",";
+    RuleActionDef &act = r.acts[a];
+    const char* payload = fire ? act.fire : act.clear;
+    // Skip empty target, and an empty clear payload (would wipe a retained topic).
+    if (act.target[0] == '\0' || (!fire && act.clear[0] == '\0')) { out += "{\"skipped\":true}"; continue; }
+    char buf[64];
+    if (act.type == RA_MQTT) {
+      bool ok = mqttClient.connected() && mqttClient.publish(act.target, payload, (bool)(act.flags & RULE_FLAG_RETAIN));
+      snprintf(buf, sizeof(buf), "{\"type\":\"mqtt\",\"ok\":%s}", ok ? "true" : "false");
+    } else {
+      int code = fireWebhook(act.target, (act.flags & RULE_FLAG_POST), payload);
+      snprintf(buf, sizeof(buf), "{\"type\":\"webhook\",\"code\":%d}", code);
+    }
+    out += buf;
+  }
+  out += "]}";
+  server.send(200, "application/json", out);
+}
+
 void handleConsumo() {
   // Chunked response prep
   server.setContentLength(CONTENT_LENGTH_UNKNOWN);
@@ -1968,6 +2876,10 @@ void handleConsumo() {
 }
 
 void setupWeb() {
+  // Capture Content-Type so the rule endpoints can enforce application/json
+  // (CSRF guard). ESP8266WebServer otherwise discards request headers.
+  server.collectHeaders("Content-Type");
+
   server.on("/", []() {
     if (server.method() == HTTP_POST) handleConfigPost();
     else handleConfigForm();
@@ -1976,6 +2888,9 @@ void setupWeb() {
   server.on("/json", handleJson);
   server.on("/json_lcd", handleJsonLCD);
   server.on("/json_alerts", handleJsonAlerts);
+  server.on("/json_rules", handleJsonRules);
+  server.on("/save_rules", HTTP_POST, handleSaveRules);
+  server.on("/rule_test", HTTP_POST, handleRuleTest);
   server.on("/wipe_eeprom", handleWipeEEPROM);
   server.on("/reset", handleReset);
 
