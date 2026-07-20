@@ -61,7 +61,6 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
     .icp-curve-table { margin-top:8px; width:98%; border-collapse:collapse; }
     .icp-curve-table th, .icp-curve-table td { border:1px solid #aae680; text-align:center; padding:3px 4px; }
     .icp-curve-table th { background:#eef; }
-    .icp-curve-table input[type="number"] { width:70px;}
     .icp-curve-box-btn { margin-top:7px;background:#1e90ff;color:#fff;border-radius:6px;padding:5px 16px;border:none;cursor:pointer; }
     .desc { color:#555; font-size:0.98em; margin-bottom:7px; }
     .lcd-row-metrics { display: flex; flex-wrap:wrap; gap:8px; margin-bottom: 5px;}
@@ -270,27 +269,35 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
             <span data-i18n="nominalCurrent">Intensidad nominal:</span> <input type="number" step="0.1" min="5" max="80" name="icpNominal" value="%ICP_NOMINAL%"> A
           </div>
           <div class="icp-row">
-            <span data-i18n="heatThreshold">Umbral de calor:</span>
+            <span data-i18n="heatThreshold">Umbral de aviso:</span>
             <input type="range" min="10" max="100" step="1" name="icpUmbral" value="%ICP_UMBRAL%" id="icpUmbralSlider" oninput="icpUmbralVal.value=value">
             <output id="icpUmbralVal">%ICP_UMBRAL%%</output>
+            <div class="icp-slider-label" data-i18n="thresholdDesc">0 % = sin peligro (el ICP no puede saltar con ese consumo); 100 % = salta ahora.</div>
           </div>
           <button type="button" onclick="toggleCurve()" class="icp-curve-box-btn" data-i18n="adjustCurve">Ajustar curva de disparo</button>
           <div id="icp-curve-box" style="display:none;margin-top:13px;">
-            <table class="icp-curve-table">
-              <tr><th data-i18n="ratioIN">Relación I/N</th><th data-i18n="tripTime">Tiempo de salto (s)</th></tr>
-              <tr><td>1.13</td><td><input type="number" name="icpCurve0" id="icpCurve0" min="1" max="7200" step="1" value="%CURVE0%"></td></tr>
-              <tr><td>1.30</td><td><input type="number" name="icpCurve1" id="icpCurve1" min="1" max="7200" step="1" value="%CURVE1%"></td></tr>
-              <tr><td>1.45</td><td><input type="number" name="icpCurve2" id="icpCurve2" min="1" max="7200" step="1" value="%CURVE2%"></td></tr>
-              <tr><td>1.60</td><td><input type="number" name="icpCurve3" id="icpCurve3" min="1" max="7200" step="1" value="%CURVE3%"></td></tr>
-              <tr><td>1.75</td><td><input type="number" name="icpCurve4" id="icpCurve4" min="1" max="7200" step="1" value="%CURVE4%"></td></tr>
-              <tr><td>2.00</td><td><input type="number" name="icpCurve5" id="icpCurve5" min="1" max="7200" step="1" value="%CURVE5%"></td></tr>
-              <tr><td>2.15</td><td><input type="text" id="icpInstant" value="0 (inmediato)" readonly style="background:#eee;color:#999;border:none;text-align:center;"></td></tr>
-            </table>
-            <div style="margin-top:12px;">
-              <label><b data-i18n="cooldown">Enfriamiento:</b> <span data-i18n="cooldownDesc">Tiempo para bajar de 100% a 0% (segundos):</span>
-                <input type="number" name="icpCooldown" id="icpCooldown" min="60" max="7200" value="%COOLDOWN%" style="width:80px;">
+            <div class="icp-row">
+              <label><b data-i18n="icpKLabel">Umbral térmico (k):</b>
+                <input type="number" name="icpK" id="icpK" min="1.05" max="1.50" step="0.01" value="%ICP_K%" style="width:80px;"> &times; In
               </label>
+              <div class="icp-slider-label" data-i18n="icpKDesc">Por debajo de este múltiplo el ICP nunca salta.</div>
             </div>
+            <div class="icp-row">
+              <label><b data-i18n="icpTauLabel">Constante térmica (&tau;):</b>
+                <input type="number" name="icpTau" id="icpTau" min="10" max="7200" step="1" value="%ICP_TAU%" style="width:80px;"> s
+              </label>
+              <div class="icp-slider-label" data-i18n="icpTauDesc">Inercia térmica del bimetal: a mayor valor, más tarda en calentarse y en enfriarse.</div>
+            </div>
+            <div class="icp-row">
+              <label><b data-i18n="cooldown">Enfriamiento:</b>
+                <input type="number" name="icpCooldown" id="icpCooldown" min="60" max="7200" value="%COOLDOWN%" style="width:80px;"> s
+              </label>
+              <div class="icp-slider-label" data-i18n="cooldownDesc">Constante de enfriamiento sin consumo.</div>
+            </div>
+            <table class="icp-curve-table" id="icpCurveTable">
+              <tr><th data-i18n="ratioIN">Relación I/In</th><th data-i18n="tripCold">Desde frío</th><th data-i18n="tripHot">Precargado</th></tr>
+            </table>
+            <div class="icp-slider-label" data-i18n="curveNote">Curva calculada: tiempo hasta el 100 % con consumo constante. «Precargado» = la casa venía consumiendo el 90 % del umbral.</div>
             <button type="button" onclick="restaurarCurva()" class="icp-curve-box-btn" style="background:#2b4;margin-top:13px;" data-i18n="restoreDefaults">Restaurar valores por defecto</button>
           </div>
         </div>
@@ -354,9 +361,14 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         mqttBroker:"Broker MQTT", brokerIp:"IP o nombre del broker MQTT:", clientName:"Nombre cliente MQTT:",
         refreshInterval:"Intervalo refresco (ms):", topicsPublished:"Topics donde se publica:",
         alerts:"Alertas", soundAlert:"Alerta sonora (buzzer)", icpThermalAlert:"Alerta ICP térmico",
-        enableIcp:"Activar alerta ICP", nominalCurrent:"Intensidad nominal:", heatThreshold:"Umbral de calor:",
-        adjustCurve:"Ajustar curva de disparo", ratioIN:"Relación I/N", tripTime:"Tiempo de salto (s)",
-        instant:"0 (inmediato)", cooldown:"Enfriamiento:", cooldownDesc:"Tiempo para bajar de 100% a 0% (segundos):",
+        enableIcp:"Activar alerta ICP", nominalCurrent:"Intensidad nominal:", heatThreshold:"Umbral de aviso:",
+        thresholdDesc:"0 % = sin peligro (el ICP no puede saltar con ese consumo); 100 % = salta ahora.",
+        adjustCurve:"Ajustar curva de disparo", ratioIN:"Relación I/In",
+        tripCold:"Desde frío", tripHot:"Precargado", neverTrips:"nunca salta",
+        icpKLabel:"Umbral térmico (k):", icpKDesc:"Por debajo de este múltiplo el ICP nunca salta.",
+        icpTauLabel:"Constante térmica (&tau;):", icpTauDesc:"Inercia térmica del bimetal: a mayor valor, más tarda en calentarse y en enfriarse.",
+        curveNote:"Curva calculada: tiempo hasta el 100 % con consumo constante. «Precargado» = la casa venía consumiendo el 90 % del umbral.",
+        cooldown:"Enfriamiento:", cooldownDesc:"Constante de enfriamiento sin consumo.",
         restoreDefaults:"Restaurar valores por defecto", currentPowerAlert:"Alerta por <b>corriente/potencia</b>",
         overvoltageAlert:"Alerta por <b>sobretensión</b>", undervoltageAlert:"Alerta por <b>subtensión</b>",
         selectMetrics:"Selecciona qué métricas quieres mostrar en pantalla:", voltage:"Voltaje",
@@ -384,9 +396,14 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         mqttBroker:"MQTT Broker", brokerIp:"MQTT broker IP or hostname:", clientName:"MQTT client name:",
         refreshInterval:"Refresh interval (ms):", topicsPublished:"Topics published to:",
         alerts:"Alerts", soundAlert:"Sound alert (buzzer)", icpThermalAlert:"Thermal ICP alert",
-        enableIcp:"Enable ICP alert", nominalCurrent:"Nominal current:", heatThreshold:"Heat threshold:",
-        adjustCurve:"Adjust trip curve", ratioIN:"I/N ratio", tripTime:"Trip time (s)",
-        instant:"0 (instant)", cooldown:"Cooldown:", cooldownDesc:"Time to go from 100% to 0% (seconds):",
+        enableIcp:"Enable ICP alert", nominalCurrent:"Nominal current:", heatThreshold:"Warning threshold:",
+        thresholdDesc:"0 % = no danger (the breaker cannot trip at that load); 100 % = tripping now.",
+        adjustCurve:"Adjust trip curve", ratioIN:"I/In ratio",
+        tripCold:"From cold", tripHot:"Preloaded", neverTrips:"never trips",
+        icpKLabel:"Thermal threshold (k):", icpKDesc:"Below this multiple the breaker never trips.",
+        icpTauLabel:"Thermal constant (&tau;):", icpTauDesc:"Thermal inertia of the bimetal: the higher the value, the longer it takes to heat up and to cool down.",
+        curveNote:"Computed curve: time to reach 100 % at constant load. \"Preloaded\" = the house was already drawing 90 % of the threshold.",
+        cooldown:"Cooldown:", cooldownDesc:"Cooling time constant with no load.",
         restoreDefaults:"Restore defaults", currentPowerAlert:"<b>Current/power</b> alert",
         overvoltageAlert:"<b>Overvoltage</b> alert", undervoltageAlert:"<b>Undervoltage</b> alert",
         selectMetrics:"Select which metrics to show on the display:", voltage:"Voltage",
@@ -420,10 +437,10 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         if (d[k] !== undefined) els[i].innerHTML = d[k];
       }
       var sc = document.getElementById('saveChangesBtn'); if(sc) sc.value = d.saveChanges;
-      var inst = document.getElementById('icpInstant'); if(inst) inst.value = d.instant;
       var lb = document.getElementById('langBtn'); if(lb) lb.textContent = (lang==='es'?'EN':'ES');
       CURRENT_LANG = lang;
       document.documentElement.lang = lang;
+      if (window.refreshCurva) window.refreshCurva();  // the computed curve has translated cells
       if (window.rulesRefreshLang) window.rulesRefreshLang();
       try { localStorage.setItem('mmt_lang', lang); } catch(e){}
     };
@@ -457,29 +474,66 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         box.style.display = (box.style.display == 'none' || box.style.display == '') ? 'block' : 'none';
       };
 
-      var icpDefVals = [2700, 900, 180, 25, 7, 1];
+      // Thermal-image defaults, calibrated against the official ICP-M curve.
+      var ICP_DEF_K = 1.30, ICP_DEF_TAU = 246, ICP_DEF_COOL = 246;
 
       window.restaurarCurva = function() {
-        for (var i = 0; i < 6; ++i)
-          document.getElementById('icpCurve' + i).value = icpDefVals[i];
-        document.getElementById('icpCooldown').value = 600;
-        checkCurvaPorDefecto();
+        document.getElementById('icpK').value = ICP_DEF_K.toFixed(2);
+        document.getElementById('icpTau').value = ICP_DEF_TAU;
+        document.getElementById('icpCooldown').value = ICP_DEF_COOL;
+        refreshCurva();
       };
 
-      function checkCurvaPorDefecto() {
-        for (var i = 0; i < 6; ++i) {
-          var inp = document.getElementById('icpCurve' + i);
-          if (!inp) continue;
-          var v = parseInt(inp.value, 10);
-          if (v !== icpDefVals[i]) inp.classList.add('icp-modificado');
-          else inp.classList.remove('icp-modificado');
+      // Trip time from the model: cold t = tau*ln(m^2/(m^2-k^2)); preloaded with
+      // Ip replaces the numerator by (m^2 - Ip^2). Same formula as the firmware,
+      // so the table always shows what the device will actually do.
+      function tripTime(m, k, tau, ip) {
+        var den = m * m - k * k;
+        var num = m * m - ip * ip;
+        if (den <= 0 || num <= 0) return null;
+        return tau * Math.log(num / den);
+      }
+      function fmtSecs(t) {
+        var d = I18N[CURRENT_LANG] || I18N.es;
+        if (t === null) return d.neverTrips;
+        if (t < 60) return t.toFixed(t < 10 ? 1 : 0) + ' s';
+        return (t / 60).toFixed(1) + ' min';
+      }
+      window.refreshCurva = function() {
+        var k = parseFloat(document.getElementById('icpK').value);
+        var tau = parseFloat(document.getElementById('icpTau').value);
+        var tbl = document.getElementById('icpCurveTable');
+        if (!tbl) return;
+        if (isNaN(k) || isNaN(tau)) {  // field being edited/emptied: blank the table
+          while (tbl.rows.length > 1) tbl.deleteRow(1);
+          return;
         }
-      }
-      checkCurvaPorDefecto();
-      for (var i = 0; i < 6; ++i) {
-        var inp = document.getElementById('icpCurve' + i);
-        if (inp) inp.addEventListener('input', checkCurvaPorDefecto);
-      }
+        var nomEl = document.querySelector('input[name="icpNominal"]');
+        var nom = nomEl ? parseFloat(nomEl.value) : NaN;
+        var d = I18N[CURRENT_LANG] || I18N.es;
+        while (tbl.rows.length > 1) tbl.deleteRow(1);
+        var mults = [1.20, 1.45, 1.60, 2.00, 2.55, 3.00];
+        for (var i = 0; i < mults.length; ++i) {
+          var m = mults[i];
+          var r = tbl.insertRow(-1);
+          var lbl = m.toFixed(2);
+          if (!isNaN(nom) && nom > 0) lbl += ' (' + (m * nom).toFixed(1) + ' A)';
+          r.insertCell(-1).textContent = lbl;
+          r.insertCell(-1).textContent = fmtSecs(tripTime(m, k, tau, 0));
+          r.insertCell(-1).textContent = fmtSecs(tripTime(m, k, tau, 0.9 * k));
+        }
+        var mk = document.getElementById('icpK');
+        var mt = document.getElementById('icpTau');
+        mk.classList.toggle('icp-modificado', Math.abs(k - ICP_DEF_K) > 0.001);
+        mt.classList.toggle('icp-modificado', tau !== ICP_DEF_TAU);
+      };
+      refreshCurva();
+      ['icpK', 'icpTau'].forEach(function(id) {
+        var inp = document.getElementById(id);
+        if (inp) inp.addEventListener('input', refreshCurva);
+      });
+      var nomInp = document.querySelector('input[name="icpNominal"]');
+      if (nomInp) nomInp.addEventListener('input', refreshCurva);
 
       function updateLCD() {
         fetch('/json_lcd').then(r=>r.json()).then(j=>{
@@ -545,10 +599,21 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         let nums = document.querySelectorAll('input[type=number]');
         for (let i = 0; i < nums.length; ++i) {
           let n = nums[i].value;
-          if(n === "" || isNaN(n) || Number(n)<0) { alert(I18N[CURRENT_LANG].checkNumbers); return false;}
+          if(n === "" || isNaN(n) || Number(n)<0) {
+            // The ICP inputs live inside a collapsible box: a browser cannot
+            // report a validation error on a hidden control, so the form would
+            // silently refuse to submit. Reveal the box before complaining.
+            if (!nums[i].checkValidity || !nums[i].checkValidity()) revealIfHidden(nums[i]);
+            alert(I18N[CURRENT_LANG].checkNumbers); return false;
+          }
+          if (nums[i].checkValidity && !nums[i].checkValidity()) revealIfHidden(nums[i]);
         }
         return true;
       };
+      function revealIfHidden(el) {
+        var box = document.getElementById('icp-curve-box');
+        if (box && box.style.display === 'none' && box.contains(el)) box.style.display = 'block';
+      }
     });
   </script>
   <script>
@@ -794,6 +859,19 @@ IPAddress dns(192, 168, 1, 1);
 // A retained message is delivered sub-second after subscribing; the timeout
 // only fully elapses when there is nothing to recover, so keep it short.
 #define ICP_RECOVER_TIMEOUT_MS 3000
+// Upper bound for one integration step of the ICP thermal model. Large enough
+// that a stalled loop still counts as real overload time, small enough that an
+// NTP/millis anomaly cannot inject a huge jump.
+#define ICP_MAX_DT_S 60.0f
+// Conventional non-tripping current (UNE-EN 60898-1 / UNE 20317): below this
+// multiple of In no breaker trips, whatever its tolerance branch. Used to arm
+// the ICP alert so a steady legitimate load never raises one.
+#define ICP_NEVER_TRIP_MULT 1.13f
+// How much warning the ICP alert aims to give before the modelled trip. The
+// sensor averages over ~1.3 s and settles in ~2.5 s, so a genuinely fast trip
+// can never be beaten; this is the practical lead time for the overloads that
+// are actually observable.
+#define ICP_WARN_LEAD_S 120.0f
 #define NTP_WAIT_TIMEOUT_MS 30000
 #define NTP_RESYNC_INTERVAL_MS 86400000UL
 
@@ -824,13 +902,17 @@ enum LcdLang : uint8_t { LANG_ES = 0, LANG_EN = 1 };
 #define DEF_ICP_ENABLED false
 #define DEF_ICP_NOMINAL 25.0f
 #define DEF_ICP_UMBRAL 75
-#define DEF_ICP_COOLDOWN 600
-#define DEF_CURVE0 2700
-#define DEF_CURVE1 900
-#define DEF_CURVE2 180
-#define DEF_CURVE3 25
-#define DEF_CURVE4 7
-#define DEF_CURVE5 1
+// Thermal-image model (IEC 60255-149). Defaults calibrated against the official
+// Merlin Gerin ICP-M trip curve (Multi 9 catalogue, C32N/C60N ICP-M): k is the
+// asymptote (I/In below which the breaker never trips) and tau the thermal time
+// constant. The catalogue draws an envelope whose two branches asymptote at
+// 1.13 and 1.45 In; k=1.30 is the midpoint of THAT range, which in the time
+// domain lands near the slow branch (135 s at 2x In vs 1.7-156 s in the
+// catalogue). The alert compensates with a fast route on instantaneous current
+// (see evaluateAlerts). See docs/auditoria_icp.md.
+#define DEF_ICP_K 1.30f
+#define DEF_ICP_TAU 246
+#define DEF_ICP_COOLDOWN DEF_ICP_TAU   // tau2 (de-energized cooling) = tau1 for a passive bimetal
 #define DEF_CONSUMO_ENABLED false
 #define DEF_CONSUMO_TIPO_A false
 #define DEF_CONSUMO_VAL 0.0f
@@ -848,7 +930,8 @@ static const unsigned long MIN_REFRESH_MS = 1000, MAX_REFRESH_MS = 60000;
 static const float MIN_ICP_NOMINAL_A = 5.0f, MAX_ICP_NOMINAL_A = 80.0f;
 static const int MIN_ICP_UMBRAL = 10, MAX_ICP_UMBRAL = 100;
 static const int MIN_ICP_COOLDOWN_S = 60, MAX_ICP_COOLDOWN_S = 7200;
-static const int MIN_CURVE_TIME_S = 1, MAX_CURVE_TIME_S = 7200;
+static const float MIN_ICP_K = 1.05f, MAX_ICP_K = 1.50f;
+static const int MIN_ICP_TAU_S = 10, MAX_ICP_TAU_S = 7200;
 static const float MIN_VOLTAGE_LIMIT = 0.0f, MAX_VOLTAGE_LIMIT = 300.0f;
 static const float MAX_CONSUMO_VAL = 10000.0f;
 
@@ -861,6 +944,7 @@ static const float MAX_CONSUMO_VAL = 10000.0f;
 #define MAX_CONDS 3
 #define MAX_ACTIONS 2
 #define RULES_MAGIC 0x53   // marks a rules table written by this firmware (0x53: multi-action layout)
+#define ICP_MODEL_MAGIC 0x71  // marks thermal-image ICP parameters written by this firmware
 
 enum RuleMetric : uint8_t {
   RM_CURRENT = 0,  // A
@@ -955,8 +1039,10 @@ struct AppConfig {
   bool icpEnabled;
   float icpNominal;
   int icpUmbral;
-  int icpCurveTimes[6];
-  int icpCooldownTime;
+  int icpCurveTimesUnused[6];  // obsolete 6-point trip curve (thermal-image model
+                               // replaced it); kept so every later field keeps its
+                               // EEPROM offset and the energy history survives.
+  int icpCooldownTime;         // now tau2: cooling time constant with no load (s)
   bool consumoEnabled;
   bool consumoEnAmperios;
   float consumoValor;
@@ -980,6 +1066,13 @@ struct AppConfig {
   // older config has garbage here, guarded by rulesMagic.
   Rule rules[MAX_RULES];
   uint8_t rulesMagic;
+
+  // Thermal-image model parameters, appended without a version bump (same
+  // migration pattern as rules[]): an older config has garbage here, guarded
+  // by icpModelMagic.
+  float icpK;      // asymptote: I/In below which the breaker never trips
+  int icpTau;      // tau1: thermal time constant under load (s)
+  uint8_t icpModelMagic;
 };
 
 // Layout guards: the append-without-version-bump migration is only safe while
@@ -1039,6 +1132,7 @@ bool ruleActClearEdge[MAX_RULES] = { false };
 
 float icpCarga = 0.0f;
 unsigned long lastIcpMillis = 0;
+bool icpPrimed = false;
 
 time_t ntpEpoch = 0;
 unsigned long ntpSyncMillis = 0;
@@ -1115,9 +1209,16 @@ void setDefaults() {
   config.icpEnabled = DEF_ICP_ENABLED;
   config.icpNominal = DEF_ICP_NOMINAL;
   config.icpUmbral = DEF_ICP_UMBRAL;
-  int defC[6] = { DEF_CURVE0, DEF_CURVE1, DEF_CURVE2, DEF_CURVE3, DEF_CURVE4, DEF_CURVE5 };
-  for (int i = 0; i < 6; i++) config.icpCurveTimes[i] = defC[i];
+  // Legacy values, NOT zeros: firmware older than the thermal-image model
+  // validates this field on boot and wipes the whole config (losing the energy
+  // history) if any entry is below MIN_CURVE_TIME_S. Writing the old defaults
+  // keeps a rollback safe.
+  int legacyCurve[6] = { 2700, 900, 180, 25, 7, 1 };
+  for (int i = 0; i < 6; i++) config.icpCurveTimesUnused[i] = legacyCurve[i];
   config.icpCooldownTime = DEF_ICP_COOLDOWN;
+  config.icpK = DEF_ICP_K;
+  config.icpTau = DEF_ICP_TAU;
+  config.icpModelMagic = ICP_MODEL_MAGIC;
 
   config.consumoEnabled = DEF_CONSUMO_ENABLED;
   config.consumoEnAmperios = DEF_CONSUMO_TIPO_A;
@@ -1169,9 +1270,6 @@ void loadConfig() {
     if (cl < 3 || cl > 31) defaults = true;
     if (config.icpNominal < MIN_ICP_NOMINAL_A || config.icpNominal > MAX_ICP_NOMINAL_A) defaults = true;
     if (config.icpUmbral < MIN_ICP_UMBRAL || config.icpUmbral > MAX_ICP_UMBRAL) defaults = true;
-    for (int i = 0; i < 6; i++) {
-      if (config.icpCurveTimes[i] < MIN_CURVE_TIME_S || config.icpCurveTimes[i] > MAX_CURVE_TIME_S) defaults = true;
-    }
     if (config.icpCooldownTime < MIN_ICP_COOLDOWN_S || config.icpCooldownTime > MAX_ICP_COOLDOWN_S) defaults = true;
     if (config.sobretensionEnabled && (config.sobretensionValor < MIN_VOLTAGE_LIMIT || config.sobretensionValor > MAX_VOLTAGE_LIMIT)) defaults = true;
     if (config.subtensionEnabled && (config.subtensionValor < MIN_VOLTAGE_LIMIT || config.subtensionValor > MAX_VOLTAGE_LIMIT)) defaults = true;
@@ -1217,6 +1315,33 @@ void loadConfig() {
       }
       if (r.enabled && (r.condCount == 0 || r.actCount == 0 || !hasTarget)) r.enabled = 0;
     }
+  }
+
+  // Thermal-image parameters, appended after rulesMagic. A config written by
+  // firmware older than the model change has garbage here; fall back to the
+  // catalogue-calibrated defaults instead of wiping the whole config. The old
+  // 6-point curve is intentionally NOT migrated: it described a different model
+  // (accumulated overload time), so its numbers have no meaning here.
+  if (config.icpModelMagic != ICP_MODEL_MAGIC) {
+    config.icpK = DEF_ICP_K;
+    config.icpTau = DEF_ICP_TAU;
+    // The old cooldown meant "seconds from 100 % to 0 %, linearly"; now it is an
+    // exponential time constant, so the stored number no longer means the same
+    // thing and is replaced rather than reinterpreted.
+    config.icpCooldownTime = DEF_ICP_COOLDOWN;
+    // Keep the legacy curve readable by older firmware (see setDefaults).
+    if (config.icpCurveTimesUnused[0] < 1 || config.icpCurveTimesUnused[0] > 7200) {
+      int legacyCurve[6] = { 2700, 900, 180, 25, 7, 1 };
+      for (int i = 0; i < 6; i++) config.icpCurveTimesUnused[i] = legacyCurve[i];
+    }
+    config.icpModelMagic = ICP_MODEL_MAGIC;
+    // Persist immediately: otherwise the migration re-runs on every boot and
+    // silently overwrites the stored cooldown each time.
+    saveConfig();
+    logMessage(F("[ICP] Thermal model migrated to defaults (k/tau/cooldown)."));
+  } else {
+    if (isnan(config.icpK) || config.icpK < MIN_ICP_K || config.icpK > MAX_ICP_K) config.icpK = DEF_ICP_K;
+    if (config.icpTau < MIN_ICP_TAU_S || config.icpTau > MAX_ICP_TAU_S) config.icpTau = DEF_ICP_TAU;
   }
 }
 
@@ -1463,13 +1588,14 @@ static int buildAlertsConfigJson(char* out, size_t n) {
       "\"sobretension\":{\"enabled\":%s,\"umbral\":%.1f,\"unidad\":\"V\"},"
       "\"subtension\":{\"enabled\":%s,\"umbral\":%.1f,\"unidad\":\"V\"},"
       "\"consumo\":{\"enabled\":%s,\"umbral\":%.2f,\"unidad\":\"%s\"},"
-      "\"icp\":{\"enabled\":%s,\"nominal\":%.2f,\"umbral\":%d,\"unidad\":\"%%\"}"
+      "\"icp\":{\"enabled\":%s,\"nominal\":%.2f,\"umbral\":%d,\"unidad\":\"%%\",\"k\":%.2f,\"tau\":%d}"
     "}",
     config.sobretensionEnabled ? "true" : "false", (double)config.sobretensionValor,
     config.subtensionEnabled   ? "true" : "false", (double)config.subtensionValor,
     config.consumoEnabled      ? "true" : "false", (double)config.consumoValor,
     config.consumoEnAmperios ? "A" : "W",
-    config.icpEnabled          ? "true" : "false", (double)config.icpNominal, config.icpUmbral
+    config.icpEnabled          ? "true" : "false", (double)config.icpNominal, config.icpUmbral,
+    (double)config.icpK, config.icpTau
   );
 }
 
@@ -1587,10 +1713,21 @@ void recoverICP() {
 
   if (icpRecibido && tsRecibido) {
     time_t now = getCurrentEpoch();
+    // getCurrentEpoch() returns 0 when NTP never validated. Without a usable
+    // clock the elapsed time is unknown, so no cooling is applied (conservative:
+    // the recovered value is kept whole) and the case is logged.
+    if (now <= 0) logMessage(F("[ICP-RECOVER] No valid clock: elapsed cooling not applied."));
     unsigned long secs = (now > tsRecibidoMQTT) ? (now - tsRecibidoMQTT) : 0;
+    // Exponential cooling with tau2, matching the thermal-image model: while the
+    // device was off there was no load (either mains down or breaker tripped).
     float cool = (float)config.icpCooldownTime;
-    float adjusted = icpRecibidoMQTT - (100.0f * secs) / cool;
-    if (adjusted < 0) adjusted = 0;
+    if (cool < 1.0f) cool = 1.0f;
+    float adjusted = icpRecibidoMQTT * expf(-(float)secs / cool);
+    // Clamp BOTH ends: the retained payload comes from the broker and nothing
+    // guarantees it is sane (a corrupt or spoofed value would otherwise reach
+    // evaluateAlerts before the first computeICP() clamps it).
+    if (isnan(adjusted) || adjusted < 0.0f) adjusted = 0.0f;
+    if (adjusted > 100.0f) adjusted = 100.0f;
     icpCarga = adjusted;
     icpRecuperado = true;
     logMessage(String(F("[ICP-RECOVER] Recovered to ")) + String(icpCarga, 2) + F("%"));
@@ -1602,63 +1739,157 @@ void recoverICP() {
 }
 
 // ================== ICP MODEL ==================
+// First-order thermal image (IEC 60255-149 eq. 1), replacing the previous
+// "accumulated overload time" integrator. icpCarga is the thermal level in %,
+// 100 % = trip point, and it now behaves like the bimetal it models:
+//
+//   H_eq = (I / (k*In))^2                        thermal equilibrium
+//   H(t) = H_eq + (H(t-dt) - H_eq) * e^(-dt/tau)
+//
+// Consequences vs the old model: the breaker is no longer assumed cold at the
+// start of every overload (a house that has been running near the contracted
+// limit trips in a fraction of the catalogue time), cooling is exponential
+// instead of linear, and the 1.00-1.13x band is no longer treated as "cooling
+// at full speed". Trip time from cold is tau*ln(m^2/(m^2-k^2)), which
+// reproduces the official Merlin Gerin ICP-M curve. See docs/auditoria_icp.md.
+//
+// There is deliberately NO instant-trip shortcut: the ICP-M magnetic release
+// acts between 5 and 8 In (135-220 A on a 25 A breaker), a range this sensor
+// cannot even observe, and the catalogue gives 1.4-116 s at 2.15x In.
 void computeICP() {
   unsigned long now = millis();
-  if (lastIcpMillis == 0) {
-    lastIcpMillis = now;
+
+  // A failed Modbus read leaves 'current' stale rather than NaN: the library
+  // stamps _lastRead before reading, so only the first getter of the cycle
+  // (voltage) reports the failure. Skip the cycle WITHOUT consuming the elapsed
+  // time, so the next valid reading integrates the whole gap; otherwise a noisy
+  // bus would silently slow the model's clock down.
+  if (isnan(voltage) || isnan(current)) return;
+
+  // First valid reading after boot. The bimetal's temperature cannot be
+  // measured, so it has to be estimated, and assuming "cold" is simply wrong:
+  // a house that has been drawing its contracted 25 A for hours leaves the
+  // breaker at 59 % of its trip point, and starting from 0 would overestimate
+  // the remaining margin by ~2x on the next overload.
+  //
+  // Best available estimate: the thermal equilibrium for the current being
+  // measured right now, since whatever the house is drawing at boot it has
+  // most likely been drawing for a while. It is capped at the safe point
+  // (equilibrium at ICP_NEVER_TRIP_MULT) so a single reading taken during a
+  // spike can never raise an alarm on its own — the seed only avoids starting
+  // cold; everything above that has to be earned by integrating real time.
+  //
+  // Whatever recoverICP() restored from the retained topic wins if it is
+  // higher: that path knows about heat accumulated BEFORE the reboot (breaker
+  // tripped or mains lost, hence no current to infer it from). Taking the max
+  // of both estimates covers the two cases with one line.
+  //
+  // Any residual error decays with tau anyway: ~9 % left after 10 min, <1 %
+  // after 20 min.
+  if (!icpPrimed) {           // not `lastIcpMillis == 0`: millis() really is 0
+    lastIcpMillis = now;      // once every 49.7 days, which would drop a cycle
+    icpPrimed = true;
+    float kSeed = config.icpK;
+    if (isnan(kSeed) || kSeed < MIN_ICP_K) kSeed = MIN_ICP_K;
+    if (kSeed > MAX_ICP_K) kSeed = MAX_ICP_K;
+    float multSeed = (config.icpNominal > 0) ? (current / config.icpNominal) : 0.0f;
+    float seed = (multSeed * multSeed) / (kSeed * kSeed);
+    float safe = (ICP_NEVER_TRIP_MULT * ICP_NEVER_TRIP_MULT) / (kSeed * kSeed);
+    if (seed > safe) seed = safe;
+    if (isnan(icpCarga) || 100.0f * seed > icpCarga) icpCarga = 100.0f * seed;
+    logMessage(String(F("[ICP] Seeded at ")) + String(icpCarga, 1) + F("% thermal"));
     return;
   }
+
   float dt = (now - lastIcpMillis) / 1000.0f;
   lastIcpMillis = now;
 
-  // Guard against loop stalls (slow web request, reconnects, OTA, NTP resync):
-  // cap dt to ~2x the expected refresh so a delayed cycle cannot cause a
-  // disproportionate jump in icpCarga. Scales with refreshInterval so long
-  // refresh periods keep integrating correctly.
-  float maxDt = 2.0f * (config.refreshInterval / 1000.0f);
-  if (maxDt < 1.0f) maxDt = 1.0f;
-  if (dt > maxDt) dt = maxDt;
+  // Only guards against absurd jumps (clock steps), NOT against normal loop
+  // stalls: 10 s blocked on an MQTT reconnect at 1.6x In is 10 s of REAL
+  // overload, and discarding it made the alert fire late.
+  if (dt <= 0.0f) return;
+  if (dt > ICP_MAX_DT_S) dt = ICP_MAX_DT_S;
 
-  float I = isnan(current) ? 0.0f : current;
-  float mult = (config.icpNominal > 0) ? (I / config.icpNominal) : 0.0f;
+  // Belt and braces: a NaN here would be absorbing (the clamps below cannot
+  // catch it) and would kill the model until the next reboot.
+  if (isnan(icpCarga)) icpCarga = 0.0f;
+  float k = config.icpK;
+  if (isnan(k) || k < MIN_ICP_K) k = MIN_ICP_K;
+  if (k > MAX_ICP_K) k = MAX_ICP_K;
+  float mult = (config.icpNominal > 0) ? (current / config.icpNominal) : 0.0f;
+  float heq = (mult * mult) / (k * k);
 
-  if (mult >= 2.15f) {
-    icpCarga = 100.0f;
-    return;
-  }
+  // tau1 whenever there is load, even below the asymptote (IEC 60255-149 note to
+  // eq. 3/4: tau1 "is also used when the equipment is energized and the phase
+  // current is reduced to a lower level"). tau2 stands in for the de-energized
+  // case, approximated here as a negligible load: below 5 % of In the house is
+  // effectively off as far as the breaker's heating is concerned.
+  float tau = (mult > 0.05f) ? (float)config.icpTau : (float)config.icpCooldownTime;
+  if (tau < 1.0f) tau = 1.0f;
 
-  const float seg[7] = { 1.13f, 1.30f, 1.45f, 1.60f, 1.75f, 2.00f, 2.15f };
-  // Effective trip time at the 2.15x endpoint: a small non-zero floor so the
-  // last segment interpolates logarithmically like the others (>= 2.15x is an
-  // instant trip, already handled above).
-  const float ICP_TRIP_FLOOR_S = 0.1f;
-  float t_salto = 0.0f;
+  float h = icpCarga / 100.0f;
+  h = heq + (h - heq) * expf(-dt / tau);
 
-  if (mult < 1.13f) {
-    icpCarga -= (100.0f * dt) / (float)config.icpCooldownTime;
-  } else {
-    for (int i = 0; i < 6; i++) {
-      if (mult < seg[i + 1]) {
-        float x0 = seg[i], x1 = seg[i + 1];
-        float y0 = (float)config.icpCurveTimes[i];
-        float y1 = (i < 5) ? (float)config.icpCurveTimes[i + 1] : ICP_TRIP_FLOOR_S;
-        if (x1 == x0) t_salto = y0;
-        else if (y0 > 0 && y1 > 0) {
-          float logy0 = log10f(y0), logy1 = log10f(y1);
-          float frac = (mult - x0) / (x1 - x0);
-          t_salto = powf(10.0f, logy0 + (logy1 - logy0) * frac);
-        } else {
-          float frac = (mult - x0) / (x1 - x0);
-          t_salto = y0 + (y1 - y0) * frac;
-        }
-        break;
-      }
-    }
-    if (t_salto > 0) icpCarga += (100.0f * dt) / t_salto;
-    else icpCarga = 100.0f;
-  }
+  icpCarga = 100.0f * h;
   if (icpCarga < 0.0f) icpCarga = 0.0f;
   if (icpCarga > 100.0f) icpCarga = 100.0f;
+}
+
+// What the user sees (LCD, web, MQTT, Rainmeter, rule engine): heat accumulated
+// towards the trip, 0-100 %, where 100 % is the trip itself.
+//
+// It is a DANGER indicator, and it moves continuously: it fills faster or
+// slower depending on the overload, and it empties as the bimetal cools. It
+// must never jump, because the user reads its rate of change as "how long do I
+// have to switch something off".
+//
+// Empty means no danger at all: the load is far enough below the trip point
+// that neither time nor a small extra appliance would get there. Full means the
+// breaker trips now. In between, "80 %" reads as "a bit more time or a bit more
+// load and it goes".
+//
+// It cannot be the raw thermal level, which is never zero in normal use (a
+// house steadily drawing its contracted 25 A leaves the bimetal at 59 %), so it
+// is measured from the heat the breaker settles at when carrying exactly the
+// current that can never trip it — ICP_NEVER_TRIP_MULT, the normative
+// conventional non-tripping current, and also the asymptote of the fast branch
+// of the manufacturer's envelope. Below that there is genuinely nothing to
+// worry about; above it the unit may or may not trip depending on where its
+// tolerance falls, which is precisely the region worth watching.
+//
+// The thermal memory is preserved: an overload starting from an already-warm
+// breaker crosses that point sooner, so the bar starts filling earlier.
+float icpNivelPeligro() {
+  if (isnan(icpCarga)) return NAN;
+  float k = config.icpK;
+  if (isnan(k) || k < MIN_ICP_K) k = MIN_ICP_K;
+  if (k > MAX_ICP_K) k = MAX_ICP_K;
+  float safe = (ICP_NEVER_TRIP_MULT * ICP_NEVER_TRIP_MULT) / (k * k);
+  if (safe > 0.95f) safe = 0.95f;   // k at/below the non-tripping current
+  float p = ((icpCarga / 100.0f) - safe) / (1.0f - safe);
+  if (p < 0.0f) p = 0.0f;
+  if (p > 1.0f) p = 1.0f;
+  return 100.0f * p;
+}
+
+// Seconds left before the modelled trip at the present current, or -1 when the
+// load cannot trip the breaker at all. This is the number that answers "how
+// long do I have to go and switch something off": the bar says how much danger
+// there is, this says how much time. Solving the thermal model forward,
+//   t = tau * ln((Heq - H) / (Heq - 1)),  defined while Heq > 1.
+float icpSegundosRestantes() {
+  if (isnan(icpCarga) || isnan(current) || config.icpNominal <= 0) return -1.0f;
+  float k = config.icpK;
+  if (isnan(k) || k < MIN_ICP_K) k = MIN_ICP_K;
+  if (k > MAX_ICP_K) k = MAX_ICP_K;
+  float mult = current / config.icpNominal;
+  float heq = (mult * mult) / (k * k);
+  if (heq <= 1.0f) return -1.0f;
+  float h = icpCarga / 100.0f;
+  if (h >= 1.0f) return 0.0f;
+  float tau = (float)config.icpTau;
+  if (tau < 1.0f) tau = 1.0f;
+  return tau * logf((heq - h) / (heq - 1.0f));
 }
 
 // ================== BUZZER =====================
@@ -1753,7 +1984,8 @@ LCDLines composeLCDLines() {
     add(tmp);
   }
   if (config.lcdMask & (1 << LCD_ICP)) {
-    if (isnan(icpCarga)) strcpy(tmp, "ErrICP"); else snprintf(tmp, sizeof(tmp), "ICP%d%%", (int)round(icpCarga));
+    float icpShow = icpNivelPeligro();
+    if (isnan(icpShow)) strcpy(tmp, "ErrICP"); else snprintf(tmp, sizeof(tmp), "ICP%d%%", (int)round(icpShow));
     add(tmp);
   }
 
@@ -1813,7 +2045,7 @@ void showLCDSplash() {
 }
 
 // ================== ALERTS =====================
-// Anti-flapping for the voltage and current/power alerts (ICP is untouched):
+// Anti-flapping for the voltage, current/power and ICP alerts:
 // - Trigger persistence: the reading must stay beyond the configured threshold
 //   for ALERT_TRIGGER_SAMPLES consecutive readings before the alert fires, so
 //   a value that just brushes the limit for an instant does not trigger it.
@@ -1822,6 +2054,7 @@ void showLCDSplash() {
 static const uint8_t ALERT_TRIGGER_SAMPLES = 3;     // consecutive readings beyond the limit to trigger
 static const float ALERT_HYST_VOLTAGE_V = 2.0f;     // volts beyond the limit to clear over/undervoltage
 static const float ALERT_HYST_CONSUMO_PCT = 0.05f;  // 5% below the limit to clear current/power
+static const float ALERT_HYST_ICP_PCT = 10.0f;      // percentage points below the ICP threshold to clear
 
 // Updates one latched alert. `valid`: alert enabled and reading usable.
 // `trigCond`: reading beyond the threshold. `clearCond`: reading back past the
@@ -1860,8 +2093,68 @@ AlertState evaluateAlerts() {
                    consumoVal >= config.consumoValor,
                    consumoVal < config.consumoValor * (1.0f - ALERT_HYST_CONSUMO_PCT));
 
-  float mult = (isnan(current) || config.icpNominal <= 0) ? 0 : current / config.icpNominal;
-  st.icp     = config.icpEnabled && icpCarga >= config.icpUmbral && mult >= 1.13f;
+  // ICP alert. Two independent routes, because one alone fails in opposite ways:
+  //
+  //  A) IMMINENCE route — estimated time left before the thermal level reaches
+  //     the trip point drops below ICP_WARN_LEAD_S. Solving the model forward at
+  //     the present current: t = tau*ln((Heq - H)/(Heq - 1)), defined only while
+  //     Heq > 1, i.e. while the load really leads to a trip. Needed because the
+  //     thermal route alone is far too slow on a hard overload: at 2x In from
+  //     cold it takes ~94 s to cross a 75 % threshold, while a breaker on the
+  //     fast branch of the catalogue envelope trips in under 2 s. This warns as
+  //     soon as the trip is within ICP_WARN_LEAD_S (15 s into a 50 A overload
+  //     instead of 94 s), and — unlike a bare "current above k" test — stays
+  //     quiet on a 35 A burst that still has eight minutes of margin.
+  //
+  //  B) DANGER-LEVEL route — the displayed level (icpNivelPeligro(), the same
+  //     0-100 % the bar shows) is past the configured threshold, so the meaning
+  //     of icpUmbral matches what the user sees. Covers the slow, sustained
+  //     overloads between the two branches of the envelope (1.13x-1.30x In),
+  //     where a sensitive unit does trip and route A stays silent, and it is
+  //     where the model's memory pays off: a house that has been near the limit
+  //     for hours starts the overload already warm.
+  //
+  // Both routes are gated by ICP_NEVER_TRIP_MULT: below 1.13x In no breaker
+  // trips (the normative "conventional non-tripping current"), so a steady
+  // legitimate load can never raise an alarm however warm the bimetal sits.
+  // Hysteresis avoids chatter, with a positive floor so a low threshold still
+  // has a reachable clear condition.
+  static bool icpLatch = false;
+  static uint8_t icpFastCount = 0;
+  float icpMult = (isnan(current) || config.icpNominal <= 0) ? 0.0f : current / config.icpNominal;
+  bool icpArmed = icpMult > ICP_NEVER_TRIP_MULT;
+  float icpClearAt = (float)config.icpUmbral - ALERT_HYST_ICP_PCT;
+  if (icpClearAt < 1.0f) icpClearAt = 1.0f;
+
+  float icpKEff = config.icpK;
+  if (isnan(icpKEff) || icpKEff < MIN_ICP_K) icpKEff = MIN_ICP_K;
+  if (icpKEff > MAX_ICP_K) icpKEff = MAX_ICP_K;
+  float icpHeq = (icpMult * icpMult) / (icpKEff * icpKEff);
+  float icpH = icpCarga / 100.0f;
+  bool icpImminent = false;
+  if (icpHeq > 1.0f) {  // only then does the present load lead to a trip
+    float left = (icpH >= 1.0f)
+                   ? 0.0f
+                   : (float)config.icpTau * logf((icpHeq - icpH) / (icpHeq - 1.0f));
+    icpImminent = (left <= ICP_WARN_LEAD_S);
+  }
+  if (icpImminent) {
+    if (icpFastCount < ALERT_TRIGGER_SAMPLES) icpFastCount++;
+  } else {
+    icpFastCount = 0;
+  }
+
+  float icpNivel = icpNivelPeligro();
+  if (isnan(icpNivel)) icpNivel = 0.0f;
+  if (!config.icpEnabled || !icpArmed) {
+    icpLatch = false;
+    if (!config.icpEnabled) icpFastCount = 0;
+  } else if (icpFastCount >= ALERT_TRIGGER_SAMPLES || icpNivel >= (float)config.icpUmbral) {
+    icpLatch = true;
+  } else if (icpNivel < icpClearAt) {
+    icpLatch = false;
+  }
+  st.icp     = icpLatch;
   st.sobre   = sobreLatch;
   st.sub     = subLatch;
   st.consumo = consumoLatch;
@@ -1870,7 +2163,19 @@ AlertState evaluateAlerts() {
   // LCD/buzzer message: highest-priority active alert
   if (st.icp) {
     snprintf(st.msg, sizeof(st.msg), "%s", ALERT_MSG_ICP[config.lcdLang]);
-    snprintf(st.value, sizeof(st.value), "%.2fA %.0f%%", current, icpCarga);
+    // Second LCD line during an ICP warning: the margin left to switch
+    // something off is the actionable number, so it replaces the percentage
+    // when the model can estimate it.
+    float icpLeft = icpSegundosRestantes();
+    if (icpLeft >= 0.0f) {
+      if (icpLeft >= 60.0f)
+        snprintf(st.value, sizeof(st.value), "%.0fA quedan %dm%02ds",
+                 current, (int)(icpLeft / 60), (int)icpLeft % 60);
+      else
+        snprintf(st.value, sizeof(st.value), "%.1fA quedan %ds", current, (int)icpLeft);
+    } else {
+      snprintf(st.value, sizeof(st.value), "%.2fA %.0f%%", current, icpNivel);
+    }
   } else if (st.sobre) {
     snprintf(st.msg, sizeof(st.msg), "%s", ALERT_MSG_OVER[config.lcdLang]);
     snprintf(st.value, sizeof(st.value), "%.1fV", voltage);
@@ -1933,10 +2238,11 @@ void publishAllMQTT() {
   json_write_num_or_err(s_pf,   sizeof(s_pf),   powerFactor, "");
   json_write_num_or_err(s_frq,  sizeof(s_frq),  frequency, "Hz");
   
-  if (isnan(icpCarga)) {
+  float icpShow = icpNivelPeligro();
+  if (isnan(icpShow)) {
     snprintf(s_icp, sizeof(s_icp), "%s", "error");
   } else {
-    snprintf(s_icp, sizeof(s_icp), "%d%%", (int)round(icpCarga));
+    snprintf(s_icp, sizeof(s_icp), "%d%%", (int)round(icpShow));
   }
 
   char s_alerts[48];
@@ -1944,8 +2250,9 @@ void publishAllMQTT() {
 
   char payload[384];
   int n = snprintf(payload, sizeof(payload),
-                   "{\"voltaje\":\"%s\",\"corriente\":\"%s\",\"potencia\":\"%s\",\"energia\":\"%s\",\"factor_potencia\":\"%s\",\"frecuencia\":\"%s\",\"icp\":\"%s\",\"alerts\":%s,\"timestamp\":%ld}",
-                   s_volt, s_curr, s_pow, s_ener, s_pf, s_frq, s_icp, s_alerts, ts);
+                   "{\"voltaje\":\"%s\",\"corriente\":\"%s\",\"potencia\":\"%s\",\"energia\":\"%s\",\"factor_potencia\":\"%s\",\"frecuencia\":\"%s\",\"icp\":\"%s\",\"icp_restante_s\":%d,\"alerts\":%s,\"timestamp\":%ld}",
+                   s_volt, s_curr, s_pow, s_ener, s_pf, s_frq, s_icp,
+                   (int)icpSegundosRestantes(), s_alerts, ts);
 
   // Send single unified JSON payload to state topic
   if (n > 0 && n < (int)sizeof(payload)) {
@@ -1958,14 +2265,18 @@ void publishAllMQTT() {
   // elapsed time since this timestamp. Outside boot we are not subscribed to
   // this topic, so this never feeds back into mqttCallback().
   // Throttled: republishing an identical value every second only churned the
-  // broker's retained store. recoverICP() compensates elapsed time from the
-  // timestamp (cooldown is applied per second since it), so a snapshot up to
-  // 60s old recovers the same (decay case) or slightly lower (conservative).
+  // broker's retained store. recoverICP() compensates the elapsed time from the
+  // timestamp (exponential cooling with tau2), so a snapshot up to 60s old
+  // recovers the same (decay case) or slightly lower (conservative).
+  // Dead band rather than "any change of the rounded value": with the thermal
+  // model icpCarga tracks the load continuously (a 1 A swing at 15 A moves it
+  // ~3 points), so a 1-point criterion would go back to publishing almost every
+  // cycle, undoing the throttling added in 3d67fde.
   if ((ntpOK && ntpEpoch != -1) && !isnan(icpCarga)) {
     static int lastIcpPublished = -1;
     static unsigned long lastIcpPublishMs = 0;
     int icpRounded = (int)round(icpCarga);
-    if (icpRounded != lastIcpPublished || millis() - lastIcpPublishMs >= 60000UL) {
+    if (abs(icpRounded - lastIcpPublished) >= 2 || millis() - lastIcpPublishMs >= 60000UL) {
       char icpPayload[64];
       int m = snprintf(icpPayload, sizeof(icpPayload),
                        "{\"valor\":%.2f,\"timestamp\":%ld}", icpCarga, ts);
@@ -1989,7 +2300,7 @@ static bool ruleMetricValue(uint8_t metric, float &out) {
     case RM_POWER:   v = power; break;
     case RM_PF:      v = powerFactor; break;
     case RM_FREQ:    v = frequency; break;
-    case RM_ICP:     v = icpCarga; break;
+    case RM_ICP:     v = icpNivelPeligro(); break;  // same 0-100 % the user sees
     case RM_ENERGY:  v = energy; break;
     default: return false;
   }
@@ -2285,14 +2596,17 @@ void handleConfigPost() {
     if (umbral > MAX_ICP_UMBRAL) umbral = MAX_ICP_UMBRAL;
     config.icpUmbral = umbral;
   }
-  for (int i = 0; i < 6; i++) {
-    String name = "icpCurve" + String(i);
-    if (server.hasArg(name)) {
-      int v = server.arg(name).toInt();
-      if (v < MIN_CURVE_TIME_S) v = MIN_CURVE_TIME_S;
-      if (v > MAX_CURVE_TIME_S) v = MAX_CURVE_TIME_S;
-      config.icpCurveTimes[i] = v;
-    }
+  if (server.hasArg("icpK")) {
+    float kv = server.arg("icpK").toFloat();
+    if (isnan(kv) || kv < MIN_ICP_K) kv = MIN_ICP_K;
+    if (kv > MAX_ICP_K) kv = MAX_ICP_K;
+    config.icpK = kv;
+  }
+  if (server.hasArg("icpTau")) {
+    int tv = server.arg("icpTau").toInt();
+    if (tv < MIN_ICP_TAU_S) tv = MIN_ICP_TAU_S;
+    if (tv > MAX_ICP_TAU_S) tv = MAX_ICP_TAU_S;
+    config.icpTau = tv;
   }
   if (server.hasArg("icpCooldown")) {
     int cool = server.arg("icpCooldown").toInt();
@@ -2390,12 +2704,8 @@ static bool configTokenValue(const char* tok, char* out, size_t n) {
   else if (!strcmp_P(tok, PSTR("LCD_ENER")))         lcdMaskChecked(LCD_ENER, out, n);
   else if (!strcmp_P(tok, PSTR("LCD_PF")))           lcdMaskChecked(LCD_PF, out, n);
   else if (!strcmp_P(tok, PSTR("LCD_ICP")))          lcdMaskChecked(LCD_ICP, out, n);
-  else if (!strcmp_P(tok, PSTR("CURVE0")))           snprintf_P(out, n, PSTR("%d"), config.icpCurveTimes[0]);
-  else if (!strcmp_P(tok, PSTR("CURVE1")))           snprintf_P(out, n, PSTR("%d"), config.icpCurveTimes[1]);
-  else if (!strcmp_P(tok, PSTR("CURVE2")))           snprintf_P(out, n, PSTR("%d"), config.icpCurveTimes[2]);
-  else if (!strcmp_P(tok, PSTR("CURVE3")))           snprintf_P(out, n, PSTR("%d"), config.icpCurveTimes[3]);
-  else if (!strcmp_P(tok, PSTR("CURVE4")))           snprintf_P(out, n, PSTR("%d"), config.icpCurveTimes[4]);
-  else if (!strcmp_P(tok, PSTR("CURVE5")))           snprintf_P(out, n, PSTR("%d"), config.icpCurveTimes[5]);
+  else if (!strcmp_P(tok, PSTR("ICP_K")))            snprintf_P(out, n, PSTR("%.2f"), (double)config.icpK);
+  else if (!strcmp_P(tok, PSTR("ICP_TAU")))          snprintf_P(out, n, PSTR("%d"), config.icpTau);
   else if (!strcmp_P(tok, PSTR("COOLDOWN")))         snprintf_P(out, n, PSTR("%d"), config.icpCooldownTime);
   else if (!strcmp_P(tok, PSTR("LAST_RESET_TIME")))  formatElapsedTimeTo(out, n, config.lastEnergyReset);
   else if (!strcmp_P(tok, PSTR("LANG")))             { strncpy_P(out, config.lcdLang == LANG_EN ? PSTR("en") : PSTR("es"), n); out[n-1] = '\0'; }
@@ -2404,6 +2714,10 @@ static bool configTokenValue(const char* tok, char* out, size_t n) {
 }
 
 void handleConfigForm() {
+  // Never cache the form: after an OTA that renames form fields, a browser
+  // serving the previous page would post the old names and silently drop the
+  // new ones, so the user would think a setting was saved when it was not.
+  server.sendHeader("Cache-Control", "no-store");
   server.setContentLength(CONTENT_LENGTH_UNKNOWN);
   server.send(200, "text/html; charset=utf-8", "");
 
@@ -2559,8 +2873,9 @@ void handleJson() {
   json_write_num_or_err(s_ener, sizeof(s_ener), energy,  "kWh");
   json_write_num_or_err(s_pf,   sizeof(s_pf),   powerFactor, "");
   json_write_num_or_err(s_frq,  sizeof(s_frq),  frequency, "Hz");
-  if (isnan(icpCarga)) snprintf(s_icp, sizeof(s_icp), "%s", "error");
-  else                 snprintf(s_icp, sizeof(s_icp), "%d%%", (int)round(icpCarga));
+  float icpShow = icpNivelPeligro();
+  if (isnan(icpShow)) snprintf(s_icp, sizeof(s_icp), "%s", "error");
+  else                snprintf(s_icp, sizeof(s_icp), "%d%%", (int)round(icpShow));
 
   char s_alerts[48];
   json_write_alerts(s_alerts, sizeof(s_alerts));
@@ -2588,12 +2903,14 @@ void handleJson() {
       "\"factor_potencia\":\"%s\","
       "\"frecuencia\":\"%s\","
       "\"icp\":\"%s\","
+      "\"icp_restante_s\":%d,"
       "\"alerts\":%s,"
       "\"timestamp\":%ld,"
       "\"energy_reset\":%ld,"
       "\"energy_reset_human\":\"%s\""
     "}",
-    s_volt, s_curr, s_pow, s_ener, s_pf, s_frq, s_icp, s_alerts,
+    s_volt, s_curr, s_pow, s_ener, s_pf, s_frq, s_icp,
+    (int)icpSegundosRestantes(), s_alerts,
     ts, er, humanEsc
   );
   if (n < 0) { server.send(500, "text/plain", "format error"); return; }
