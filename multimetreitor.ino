@@ -271,7 +271,6 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
           <div class="icp-row">
             <span data-i18n="warnWindow">Margen de aviso:</span>
             <input type="number" min="15" max="1800" step="5" name="icpAvisoMax" id="icpAvisoMax" value="%ICP_AVISO%" style="width:80px;"> s
-            <div class="icp-slider-label" data-i18n="warnWindowDesc">La barra se llena durante estos segundos previos al salto: vacía = queda más tiempo (o no puede saltar), llena = salta ahora.</div>
           </div>
           <div class="icp-row">
             <span data-i18n="heatThreshold">Umbral de aviso:</span>
@@ -282,14 +281,11 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
           <button type="button" onclick="toggleCurve()" class="icp-curve-box-btn" data-i18n="adjustCurve">Ajustar curva de disparo</button>
           <div id="icp-curve-box" style="display:none;margin-top:13px;">
             <div class="icp-row">
-              <label><b data-i18n="tripFromLabel">Aguanta siempre hasta:</b>
-                <input type="number" id="icpSaltaA" step="0.25" style="width:80px;"> A
-                &nbsp;=&nbsp;
+              <label><b data-i18n="tripFromLabel">Sensibilidad del ICP:</b>
                 <input type="number" name="icpK" id="icpK" min="1.05" max="1.50" step="0.01" value="%ICP_K%" style="width:70px;">
                 <span data-i18n="timesIn">&times; In</span>
-                <span id="icpRatio" style="color:#397;font-size:0.95em;"></span>
               </label>
-              <div class="icp-slider-label" data-i18n="tripFromDesc">Por debajo de esta corriente tu ICP no salta nunca, por mucho que dure. No es un corte brusco: justo por encima tarda decenas de minutos, y cuanto mayor es el exceso antes salta (ver tabla). El catálogo admite un margen: cuanto menor lo pongas, más sensible supones el aparato.</div>
+              <div class="icp-slider-label" id="icpRatio"></div>
             </div>
             <div class="icp-row">
               <a href="#" onclick="toggleAvanzado();return false" style="font-size:0.92em;color:#397;" data-i18n="advanced">Ajustes avanzados</a>
@@ -299,19 +295,17 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
                 <label><b data-i18n="icpTauLabel">Constante térmica (&tau;):</b>
                   <input type="number" name="icpTau" id="icpTau" min="10" max="7200" step="1" value="%ICP_TAU%" style="width:80px;"> s
                 </label>
-                <div class="icp-slider-label" data-i18n="icpTauDesc">Inercia térmica del bimetal: a mayor valor, más tarda en calentarse y en enfriarse. Se deriva de la curva del catálogo, edítalo solo si tienes datos propios.</div>
               </div>
               <div class="icp-row">
                 <label><b data-i18n="cooldown">Enfriamiento:</b>
                   <input type="number" name="icpCooldown" id="icpCooldown" min="60" max="7200" value="%COOLDOWN%" style="width:80px;"> s
                 </label>
-                <div class="icp-slider-label" data-i18n="cooldownDesc">Constante de enfriamiento sin consumo.</div>
               </div>
+              <div class="icp-slider-label" data-i18n="advancedNote">Se recalculan al cambiar la sensibilidad.</div>
             </div>
             <table class="icp-curve-table" id="icpCurveTable">
               <tr><th data-i18n="ratioIN">Relación I/In</th><th data-i18n="tripCold">Desde frío</th><th data-i18n="tripHot">Precargado</th></tr>
             </table>
-            <div class="icp-slider-label" data-i18n="curveNote">Curva calculada: tiempo hasta el 100 % con consumo constante. «Precargado» = la casa venía consumiendo el 90 % del umbral.</div>
             <button type="button" onclick="restaurarCurva()" class="icp-curve-box-btn" style="background:#2b4;margin-top:13px;" data-i18n="restoreDefaults">Restaurar valores por defecto</button>
           </div>
         </div>
@@ -377,18 +371,16 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         alerts:"Alertas", soundAlert:"Alerta sonora (buzzer)", icpThermalAlert:"Alerta ICP térmico",
         enableIcp:"Activar alerta ICP", nominalCurrent:"Intensidad nominal:", heatThreshold:"Umbral de aviso:",
         warnWindow:"Margen de aviso:",
-        warnWindowDesc:"La barra se llena durante estos segundos previos al salto: vacía = queda más tiempo (o no puede saltar), llena = salta ahora.",
         warnMeans:"Te avisará cuando queden {s} s para el salto.",
         adjustCurve:"Ajustar curva de disparo", ratioIN:"Relación I/In",
         tripCold:"Desde frío", tripHot:"Precargado", neverTrips:"nunca salta",
-        tripFromLabel:"Aguanta siempre hasta:",
-        timesIn:"× In", ratioIn:"(dentro de la banda del catálogo: 1,13 a 1,45)",
-        ratioOut:"(fuera de la banda del catálogo: 1,13 a 1,45)",
-        tripFromDesc:"Por debajo de esta corriente tu ICP no salta nunca, por mucho que dure. No es un corte brusco: justo por encima tarda decenas de minutos, y cuanto mayor es el exceso antes salta (ver tabla). El catálogo admite un margen: cuanto menor lo pongas, más sensible supones el aparato.",
+        tripFromLabel:"Sensibilidad del ICP:",
+        timesIn:"× In",
+        ratioMeans:"= {a} A · &tau; {t} s",
+        advancedNote:"Se recalculan al cambiar la sensibilidad.",
         advanced:"Ajustes avanzados",
-        icpTauLabel:"Constante térmica (&tau;):", icpTauDesc:"Inercia térmica del bimetal: a mayor valor, más tarda en calentarse y en enfriarse. Se deriva de la curva del catálogo, edítalo solo si tienes datos propios.",
-        curveNote:"Curva calculada: tiempo hasta el 100 % con consumo constante. «Precargado» = la casa venía consumiendo el 90 % del umbral.",
-        cooldown:"Enfriamiento:", cooldownDesc:"Constante de enfriamiento sin consumo.",
+        icpTauLabel:"Constante térmica (&tau;):",
+        cooldown:"Enfriamiento:", 
         restoreDefaults:"Restaurar valores por defecto", currentPowerAlert:"Alerta por <b>corriente/potencia</b>",
         overvoltageAlert:"Alerta por <b>sobretensión</b>", undervoltageAlert:"Alerta por <b>subtensión</b>",
         selectMetrics:"Selecciona qué métricas quieres mostrar en pantalla:", voltage:"Voltaje",
@@ -418,18 +410,16 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         alerts:"Alerts", soundAlert:"Sound alert (buzzer)", icpThermalAlert:"Thermal ICP alert",
         enableIcp:"Enable ICP alert", nominalCurrent:"Nominal current:", heatThreshold:"Warning threshold:",
         warnWindow:"Warning window:",
-        warnWindowDesc:"The bar fills over these seconds before the trip: empty = more time left (or it cannot trip), full = tripping now.",
         warnMeans:"You will be warned when {s} s are left before the trip.",
         adjustCurve:"Adjust trip curve", ratioIN:"I/In ratio",
         tripCold:"From cold", tripHot:"Preloaded", neverTrips:"never trips",
-        tripFromLabel:"Holds indefinitely up to:",
-        timesIn:"× In", ratioIn:"(inside the catalogue band: 1.13 to 1.45)",
-        ratioOut:"(outside the catalogue band: 1.13 to 1.45)",
-        tripFromDesc:"Below this current your breaker never trips, however long the load lasts. It is not a sharp cutoff: just above it takes tens of minutes, and the greater the excess the sooner it goes (see table). The catalogue allows a range: the lower you set it, the more sensitive you assume the unit to be.",
+        tripFromLabel:"ICP sensitivity:",
+        timesIn:"× In",
+        ratioMeans:"= {a} A · &tau; {t} s",
+        advancedNote:"Recomputed when the sensitivity changes.",
         advanced:"Advanced settings",
-        icpTauLabel:"Thermal constant (&tau;):", icpTauDesc:"Thermal inertia of the bimetal: the higher the value, the longer it takes to heat up and to cool down. Derived from the catalogue curve; edit only with data of your own.",
-        curveNote:"Computed curve: time to reach 100 % at constant load. \"Preloaded\" = the house was already drawing 90 % of the threshold.",
-        cooldown:"Cooldown:", cooldownDesc:"Cooling time constant with no load.",
+        icpTauLabel:"Thermal constant (&tau;):",
+        cooldown:"Cooldown:", 
         restoreDefaults:"Restore defaults", currentPowerAlert:"<b>Current/power</b> alert",
         overvoltageAlert:"<b>Overvoltage</b> alert", undervoltageAlert:"<b>Undervoltage</b> alert",
         selectMetrics:"Select which metrics to show on the display:", voltage:"Voltage",
@@ -517,43 +507,32 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         var v = n ? parseFloat(n.value) : NaN;
         return (isNaN(v) || v <= 0) ? 25 : v;
       }
-      // Amps and ratio are the same setting seen from two sides (amps = k x In),
-      // so either can be typed and the other follows. tau is recomputed from k
-      // in both cases; editing tau by hand under "advanced" does not feed back,
-      // so a hand-tuned value is never overwritten.
-      function applyK(k) {
-        if (k < 1.05) k = 1.05;
-        if (k > 1.50) k = 1.50;
-        document.getElementById('icpK').value = k.toFixed(2);
-        var t = tauFromK(k);
+      // The ratio is the only thing to set. tau and the cooldown are derived
+      // from it (they are not free: fitting the catalogue curve ties them to k),
+      // and the amps are just k x In, shown as text so the number means
+      // something in the units the house is measured in.
+      window.ratioChanged = function() {
+        var el = document.getElementById('icpK');
+        var k = parseFloat(el.value);
+        if (isNaN(k)) return;
+        var kc = Math.min(1.50, Math.max(1.05, k));
+        var t = tauFromK(kc);
         document.getElementById('icpTau').value = t;
         document.getElementById('icpCooldown').value = Math.max(60, t);
-        syncSaltaA(true);
+        syncSaltaA();
         refreshCurva();
-      }
-      window.saltaAChanged = function() {           // typed in amps
-        var a = parseFloat(document.getElementById('icpSaltaA').value);
-        if (!isNaN(a)) applyK(a / nominalVal());
       };
-      window.ratioChanged = function() {            // typed as a ratio of In
+      // Restates the ratio in amps and says whether it falls inside the band
+      // the manufacturer's catalogue allows.
+      window.syncSaltaA = function() {
         var k = parseFloat(document.getElementById('icpK').value);
-        if (!isNaN(k)) applyK(k);
-      };
-      // Refreshes the amps field and the catalogue hint from the current k.
-      // skipAmps avoids fighting the field the user is typing in.
-      window.syncSaltaA = function(skipAmps) {
-        var k = parseFloat(document.getElementById('icpK').value);
-        var el = document.getElementById('icpSaltaA');
-        var nom = nominalVal();
-        el.min = (1.05 * nom).toFixed(2);
-        el.max = (1.50 * nom).toFixed(2);
-        if (!isNaN(k) && !skipAmps) el.value = (k * nom).toFixed(2);
-        else if (!isNaN(k) && document.activeElement !== el) el.value = (k * nom).toFixed(2);
         var r = document.getElementById('icpRatio');
-        if (r && !isNaN(k)) {
-          var d = I18N[CURRENT_LANG] || I18N.es;
-          r.textContent = (k < 1.13 || k > 1.45) ? d.ratioOut : d.ratioIn;
-        }
+        if (!r || isNaN(k)) return;
+        var d = I18N[CURRENT_LANG] || I18N.es;
+        var txt = d.ratioMeans.replace('{a}', (k * nominalVal()).toFixed(2))
+                              .replace('{t}', document.getElementById('icpTau').value);
+        // innerHTML, not textContent: ratioMeans carries a &tau; entity.
+        r.innerHTML = txt;
       };
 
       // Thermal-image defaults, calibrated against the official ICP-M curve.
@@ -561,9 +540,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
 
       window.restaurarCurva = function() {
         document.getElementById('icpK').value = ICP_DEF_K.toFixed(2);
-        document.getElementById('icpTau').value = ICP_DEF_TAU;
-        document.getElementById('icpCooldown').value = ICP_DEF_COOL;
-        refreshCurva();
+        ratioChanged();   // tau and cooldown follow from k
       };
 
       // Trip time from the model: cold t = tau*ln(m^2/(m^2-k^2)); preloaded with
@@ -625,10 +602,10 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       refreshCurva();
       var kInp = document.getElementById('icpK');
       if (kInp) kInp.addEventListener('input', ratioChanged);
+      // Advanced fields feed the curve preview but never write back to the
+      // ratio, so a hand-tuned tau survives until the ratio is touched again.
       var tauInp = document.getElementById('icpTau');
-      if (tauInp) tauInp.addEventListener('input', refreshCurva);
-      var saltaInp = document.getElementById('icpSaltaA');
-      if (saltaInp) saltaInp.addEventListener('input', saltaAChanged);
+      if (tauInp) tauInp.addEventListener('input', function(){ syncSaltaA(); refreshCurva(); });
       var avisoInp = document.getElementById('icpAvisoMax');
       if (avisoInp) avisoInp.addEventListener('input', refreshAviso);
       var nomInp = document.querySelector('input[name="icpNominal"]');
