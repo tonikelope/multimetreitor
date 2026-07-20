@@ -287,22 +287,8 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
               </label>
               <div class="icp-slider-label" id="icpRatio"></div>
             </div>
-            <div class="icp-row">
-              <a href="#" onclick="toggleAvanzado();return false" style="font-size:0.92em;color:#397;" data-i18n="advanced">Ajustes avanzados</a>
-            </div>
-            <div id="icp-avanzado" style="display:none;">
-              <div class="icp-row">
-                <label><b data-i18n="icpTauLabel">Constante térmica (&tau;):</b>
-                  <input type="number" name="icpTau" id="icpTau" min="10" max="7200" step="1" value="%ICP_TAU%" style="width:80px;"> s
-                </label>
-              </div>
-              <div class="icp-row">
-                <label><b data-i18n="cooldown">Enfriamiento:</b>
-                  <input type="number" name="icpCooldown" id="icpCooldown" min="60" max="7200" value="%COOLDOWN%" style="width:80px;"> s
-                </label>
-              </div>
-              <div class="icp-slider-label" data-i18n="advancedNote">Se recalculan al cambiar la sensibilidad.</div>
-            </div>
+            <input type="hidden" name="icpTau" id="icpTau" value="%ICP_TAU%">
+            <input type="hidden" name="icpCooldown" id="icpCooldown" value="%COOLDOWN%">
             <table class="icp-curve-table" id="icpCurveTable">
               <tr><th data-i18n="ratioIN">Relación I/In</th><th data-i18n="tripCold">Desde frío</th><th data-i18n="tripHot">Precargado</th></tr>
             </table>
@@ -377,10 +363,6 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         tripFromLabel:"Sensibilidad del ICP:",
         timesIn:"× In",
         ratioMeans:"= {a} A · &tau; {t} s",
-        advancedNote:"Se recalculan al cambiar la sensibilidad.",
-        advanced:"Ajustes avanzados",
-        icpTauLabel:"Constante térmica (&tau;):",
-        cooldown:"Enfriamiento:", 
         restoreDefaults:"Restaurar valores por defecto", currentPowerAlert:"Alerta por <b>corriente/potencia</b>",
         overvoltageAlert:"Alerta por <b>sobretensión</b>", undervoltageAlert:"Alerta por <b>subtensión</b>",
         selectMetrics:"Selecciona qué métricas quieres mostrar en pantalla:", voltage:"Voltaje",
@@ -416,10 +398,6 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         tripFromLabel:"ICP sensitivity:",
         timesIn:"× In",
         ratioMeans:"= {a} A · &tau; {t} s",
-        advancedNote:"Recomputed when the sensitivity changes.",
-        advanced:"Advanced settings",
-        icpTauLabel:"Thermal constant (&tau;):",
-        cooldown:"Cooldown:", 
         restoreDefaults:"Restore defaults", currentPowerAlert:"<b>Current/power</b> alert",
         overvoltageAlert:"<b>Overvoltage</b> alert", undervoltageAlert:"<b>Undervoltage</b> alert",
         selectMetrics:"Select which metrics to show on the display:", voltage:"Voltage",
@@ -488,10 +466,6 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       window.toggleCurve = function() {
         var box = document.getElementById('icp-curve-box');
         box.style.display = (box.style.display == 'none' || box.style.display == '') ? 'block' : 'none';
-      };
-      window.toggleAvanzado = function() {
-        var b = document.getElementById('icp-avanzado');
-        b.style.display = (b.style.display == 'none' || b.style.display == '') ? 'block' : 'none';
       };
 
       // k and tau are not independent: fitting the manufacturer's curve ties
@@ -581,10 +555,9 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
           r.insertCell(-1).textContent = fmtSecs(tripTime(m, k, tau, 0));
           r.insertCell(-1).textContent = fmtSecs(tripTime(m, k, tau, 0.9 * k));
         }
+        // Highlight the ratio when it is away from the catalogue default.
         var mk = document.getElementById('icpK');
-        var mt = document.getElementById('icpTau');
-        mk.classList.toggle('icp-modificado', Math.abs(k - ICP_DEF_K) > 0.001);
-        mt.classList.toggle('icp-modificado', tau !== ICP_DEF_TAU);
+        if (mk) mk.classList.toggle('icp-modificado', Math.abs(k - ICP_DEF_K) > 0.001);
       };
       // Spells out what the threshold means in seconds, so the percentage is
       // never something the user has to translate in their head.
@@ -602,10 +575,6 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       refreshCurva();
       var kInp = document.getElementById('icpK');
       if (kInp) kInp.addEventListener('input', ratioChanged);
-      // Advanced fields feed the curve preview but never write back to the
-      // ratio, so a hand-tuned tau survives until the ratio is touched again.
-      var tauInp = document.getElementById('icpTau');
-      if (tauInp) tauInp.addEventListener('input', function(){ syncSaltaA(); refreshCurva(); });
       var avisoInp = document.getElementById('icpAvisoMax');
       if (avisoInp) avisoInp.addEventListener('input', refreshAviso);
       var nomInp = document.querySelector('input[name="icpNominal"]');
