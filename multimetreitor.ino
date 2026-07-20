@@ -284,6 +284,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
             <div class="icp-row">
               <label><b data-i18n="tripFromLabel">Aguanta siempre hasta:</b>
                 <input type="number" id="icpSaltaA" step="0.25" style="width:80px;"> A
+                <span id="icpRatio" style="color:#397;font-size:0.95em;"></span>
               </label>
               <div class="icp-slider-label" data-i18n="tripFromDesc">Por debajo de esta corriente tu ICP no salta nunca, por mucho que dure. No es un corte brusco: justo por encima tarda decenas de minutos, y cuanto mayor es el exceso antes salta (ver tabla). El catálogo admite un margen: cuanto menor lo pongas, más sensible supones el aparato.</div>
             </div>
@@ -384,6 +385,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         adjustCurve:"Ajustar curva de disparo", ratioIN:"Relación I/In",
         tripCold:"Desde frío", tripHot:"Precargado", neverTrips:"nunca salta",
         tripFromLabel:"Aguanta siempre hasta:",
+        ratioIs:"= {k} × In  (el catálogo admite de 1,13 a 1,45)",
         tripFromDesc:"Por debajo de esta corriente tu ICP no salta nunca, por mucho que dure. No es un corte brusco: justo por encima tarda decenas de minutos, y cuanto mayor es el exceso antes salta (ver tabla). El catálogo admite un margen: cuanto menor lo pongas, más sensible supones el aparato.",
         advanced:"Ajustes avanzados",
         icpKLabel:"Umbral térmico (k):", icpKDesc:"Por debajo de este múltiplo el ICP nunca salta.",
@@ -424,6 +426,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         adjustCurve:"Adjust trip curve", ratioIN:"I/In ratio",
         tripCold:"From cold", tripHot:"Preloaded", neverTrips:"never trips",
         tripFromLabel:"Holds indefinitely up to:",
+        ratioIs:"= {k} × In  (the catalogue allows 1.13 to 1.45)",
         tripFromDesc:"Below this current your breaker never trips, however long the load lasts. It is not a sharp cutoff: just above it takes tens of minutes, and the greater the excess the sooner it goes (see table). The catalogue allows a range: the lower you set it, the more sensitive you assume the unit to be.",
         advanced:"Advanced settings",
         icpKLabel:"Thermal threshold (k):", icpKDesc:"Below this multiple the breaker never trips.",
@@ -539,6 +542,13 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         el.min = (1.05 * nom).toFixed(2);
         el.max = (1.50 * nom).toFixed(2);
         if (!isNaN(k)) el.value = (k * nom).toFixed(2);
+        // The amps are just k x In; showing the ratio keeps the link visible,
+        // and the ratio is what the catalogue is expressed in.
+        var r = document.getElementById('icpRatio');
+        if (r && !isNaN(k)) {
+          var d = I18N[CURRENT_LANG] || I18N.es;
+          r.textContent = d.ratioIs.replace('{k}', k.toFixed(2));
+        }
       };
 
       // Thermal-image defaults, calibrated against the official ICP-M curve.
