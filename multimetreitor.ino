@@ -282,22 +282,33 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
           <button type="button" onclick="toggleCurve()" class="icp-curve-box-btn" data-i18n="adjustCurve">Ajustar curva de disparo</button>
           <div id="icp-curve-box" style="display:none;margin-top:13px;">
             <div class="icp-row">
-              <label><b data-i18n="icpKLabel">Umbral térmico (k):</b>
-                <input type="number" name="icpK" id="icpK" min="1.05" max="1.50" step="0.01" value="%ICP_K%" style="width:80px;"> &times; In
+              <label><b data-i18n="tripFromLabel">Salta a partir de:</b>
+                <input type="number" id="icpSaltaA" step="0.25" style="width:80px;"> A
               </label>
-              <div class="icp-slider-label" data-i18n="icpKDesc">Por debajo de este múltiplo el ICP nunca salta.</div>
+              <div class="icp-slider-label" data-i18n="tripFromDesc">Por debajo de esta corriente tu ICP aguanta indefinidamente. El catálogo del fabricante admite un margen: cuanto menor sea, más sensible se supone el aparato.</div>
             </div>
             <div class="icp-row">
-              <label><b data-i18n="icpTauLabel">Constante térmica (&tau;):</b>
-                <input type="number" name="icpTau" id="icpTau" min="10" max="7200" step="1" value="%ICP_TAU%" style="width:80px;"> s
-              </label>
-              <div class="icp-slider-label" data-i18n="icpTauDesc">Inercia térmica del bimetal: a mayor valor, más tarda en calentarse y en enfriarse.</div>
+              <a href="#" onclick="toggleAvanzado();return false" style="font-size:0.92em;color:#397;" data-i18n="advanced">Ajustes avanzados</a>
             </div>
-            <div class="icp-row">
-              <label><b data-i18n="cooldown">Enfriamiento:</b>
-                <input type="number" name="icpCooldown" id="icpCooldown" min="60" max="7200" value="%COOLDOWN%" style="width:80px;"> s
-              </label>
-              <div class="icp-slider-label" data-i18n="cooldownDesc">Constante de enfriamiento sin consumo.</div>
+            <div id="icp-avanzado" style="display:none;">
+              <div class="icp-row">
+                <label><b data-i18n="icpKLabel">Umbral térmico (k):</b>
+                  <input type="number" name="icpK" id="icpK" min="1.05" max="1.50" step="0.01" value="%ICP_K%" style="width:80px;"> &times; In
+                </label>
+                <div class="icp-slider-label" data-i18n="icpKDesc">Por debajo de este múltiplo el ICP nunca salta.</div>
+              </div>
+              <div class="icp-row">
+                <label><b data-i18n="icpTauLabel">Constante térmica (&tau;):</b>
+                  <input type="number" name="icpTau" id="icpTau" min="10" max="7200" step="1" value="%ICP_TAU%" style="width:80px;"> s
+                </label>
+                <div class="icp-slider-label" data-i18n="icpTauDesc">Inercia térmica del bimetal: a mayor valor, más tarda en calentarse y en enfriarse. Se deriva de la curva del catálogo, edítalo solo si tienes datos propios.</div>
+              </div>
+              <div class="icp-row">
+                <label><b data-i18n="cooldown">Enfriamiento:</b>
+                  <input type="number" name="icpCooldown" id="icpCooldown" min="60" max="7200" value="%COOLDOWN%" style="width:80px;"> s
+                </label>
+                <div class="icp-slider-label" data-i18n="cooldownDesc">Constante de enfriamiento sin consumo.</div>
+              </div>
             </div>
             <table class="icp-curve-table" id="icpCurveTable">
               <tr><th data-i18n="ratioIN">Relación I/In</th><th data-i18n="tripCold">Desde frío</th><th data-i18n="tripHot">Precargado</th></tr>
@@ -372,8 +383,11 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         warnMeans:"Te avisará cuando queden {s} s para el salto.",
         adjustCurve:"Ajustar curva de disparo", ratioIN:"Relación I/In",
         tripCold:"Desde frío", tripHot:"Precargado", neverTrips:"nunca salta",
+        tripFromLabel:"Salta a partir de:",
+        tripFromDesc:"Por debajo de esta corriente tu ICP aguanta indefinidamente. El catálogo del fabricante admite un margen: cuanto menor sea, más sensible se supone el aparato.",
+        advanced:"Ajustes avanzados",
         icpKLabel:"Umbral térmico (k):", icpKDesc:"Por debajo de este múltiplo el ICP nunca salta.",
-        icpTauLabel:"Constante térmica (&tau;):", icpTauDesc:"Inercia térmica del bimetal: a mayor valor, más tarda en calentarse y en enfriarse.",
+        icpTauLabel:"Constante térmica (&tau;):", icpTauDesc:"Inercia térmica del bimetal: a mayor valor, más tarda en calentarse y en enfriarse. Se deriva de la curva del catálogo, edítalo solo si tienes datos propios.",
         curveNote:"Curva calculada: tiempo hasta el 100 % con consumo constante. «Precargado» = la casa venía consumiendo el 90 % del umbral.",
         cooldown:"Enfriamiento:", cooldownDesc:"Constante de enfriamiento sin consumo.",
         restoreDefaults:"Restaurar valores por defecto", currentPowerAlert:"Alerta por <b>corriente/potencia</b>",
@@ -409,8 +423,11 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         warnMeans:"You will be warned when {s} s are left before the trip.",
         adjustCurve:"Adjust trip curve", ratioIN:"I/In ratio",
         tripCold:"From cold", tripHot:"Preloaded", neverTrips:"never trips",
+        tripFromLabel:"Trips above:",
+        tripFromDesc:"Below this current your breaker holds indefinitely. The manufacturer's catalogue allows a range: the lower the value, the more sensitive the unit is assumed to be.",
+        advanced:"Advanced settings",
         icpKLabel:"Thermal threshold (k):", icpKDesc:"Below this multiple the breaker never trips.",
-        icpTauLabel:"Thermal constant (&tau;):", icpTauDesc:"Thermal inertia of the bimetal: the higher the value, the longer it takes to heat up and to cool down.",
+        icpTauLabel:"Thermal constant (&tau;):", icpTauDesc:"Thermal inertia of the bimetal: the higher the value, the longer it takes to heat up and to cool down. Derived from the catalogue curve; edit only with data of your own.",
         curveNote:"Computed curve: time to reach 100 % at constant load. \"Preloaded\" = the house was already drawing 90 % of the threshold.",
         cooldown:"Cooldown:", cooldownDesc:"Cooling time constant with no load.",
         restoreDefaults:"Restore defaults", currentPowerAlert:"<b>Current/power</b> alert",
@@ -482,6 +499,47 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         var box = document.getElementById('icp-curve-box');
         box.style.display = (box.style.display == 'none' || box.style.display == '') ? 'block' : 'none';
       };
+      window.toggleAvanzado = function() {
+        var b = document.getElementById('icp-avanzado');
+        b.style.display = (b.style.display == 'none' || b.style.display == '') ? 'block' : 'none';
+      };
+
+      // k and tau are not independent: fitting the manufacturer's curve ties
+      // them together as tau = 449/k^2.3 (within 0.5 %, far inside the ~10 %
+      // error of reading the printed graph). So the form asks for the single
+      // number that has a physical meaning in amps — the current above which
+      // this breaker eventually trips, k*In — and derives the rest. The raw
+      // values stay editable under "advanced" for when the forensic log says
+      // this particular unit does not follow the catalogue family.
+      function tauFromK(k) { return Math.round(449.0 / Math.pow(k, 2.3)); }
+      function nominalVal() {
+        var n = document.querySelector('input[name="icpNominal"]');
+        var v = n ? parseFloat(n.value) : NaN;
+        return (isNaN(v) || v <= 0) ? 25 : v;
+      }
+      // "Salta a partir de" -> k, tau and cooldown
+      window.saltaAChanged = function() {
+        var a = parseFloat(document.getElementById('icpSaltaA').value);
+        if (isNaN(a)) return;
+        var k = a / nominalVal();
+        if (k < 1.05) k = 1.05;
+        if (k > 1.50) k = 1.50;
+        document.getElementById('icpK').value = k.toFixed(2);
+        var t = tauFromK(k);
+        document.getElementById('icpTau').value = t;
+        document.getElementById('icpCooldown').value = Math.max(60, t);
+        refreshCurva();
+      };
+      // Editing the raw values only refreshes the amps field, never the other
+      // way round, so a hand-tuned tau is not overwritten.
+      window.syncSaltaA = function() {
+        var k = parseFloat(document.getElementById('icpK').value);
+        var el = document.getElementById('icpSaltaA');
+        var nom = nominalVal();
+        el.min = (1.05 * nom).toFixed(2);
+        el.max = (1.50 * nom).toFixed(2);
+        if (!isNaN(k)) el.value = (k * nom).toFixed(2);
+      };
 
       // Thermal-image defaults, calibrated against the official ICP-M curve.
       var ICP_DEF_K = 1.30, ICP_DEF_TAU = 246, ICP_DEF_COOL = 246;
@@ -547,16 +605,19 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         var left = Math.round(win * (1 - u / 100));
         el.textContent = d.warnMeans.replace('{s}', left);
       };
+      syncSaltaA();
       refreshAviso();
       refreshCurva();
       ['icpK', 'icpTau'].forEach(function(id) {
         var inp = document.getElementById(id);
-        if (inp) inp.addEventListener('input', refreshCurva);
+        if (inp) inp.addEventListener('input', function(){ syncSaltaA(); refreshCurva(); });
       });
+      var saltaInp = document.getElementById('icpSaltaA');
+      if (saltaInp) saltaInp.addEventListener('input', saltaAChanged);
       var avisoInp = document.getElementById('icpAvisoMax');
       if (avisoInp) avisoInp.addEventListener('input', refreshAviso);
       var nomInp = document.querySelector('input[name="icpNominal"]');
-      if (nomInp) nomInp.addEventListener('input', refreshCurva);
+      if (nomInp) nomInp.addEventListener('input', function(){ syncSaltaA(); refreshCurva(); });
 
       function updateLCD() {
         fetch('/json_lcd').then(r=>r.json()).then(j=>{
