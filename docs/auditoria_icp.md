@@ -384,6 +384,26 @@ Con eso la barra marca **0 % en todo consumo que no pueda hacer saltar el ICP** 
 
 El estado térmico crudo se sigue usando internamente y es lo que se persiste en el topic *retained*, porque es lo que hay que restaurar tras un reinicio.
 
+### Registro forense: la única vía para calibrar contra el aparato real
+
+La envolvente del fabricante abarca un factor ~80 en tiempo, así que ningún catálogo puede decir dónde cae este ejemplar concreto. Sólo el propio aparato puede. Por eso se registra cada episodio por encima de la corriente convencional de no funcionamiento (28,25 A con los valores actuales):
+
+```json
+{"nominal":25.00,"umbral_registro_a":28.25,"eventos":[
+  {"ts":1784580655,"dur_s":240,"i_max_a":34.10,"nivel_max":62,"disparo":false}
+]}
+```
+
+Cada episodio guarda cuándo empezó, cuánto duró por encima del umbral, la corriente punta, el nivel máximo que alcanzó la barra y si terminó en disparo. Doce eventos en anillo, 144 B al final de `AppConfig` con el mismo patrón *magic* que el resto (`sizeof` 3512 < 4096, offsets previos intactos).
+
+**Cómo estrecha la banda.** Cada episodio que **no** acaba en disparo es una cota: «34 A durante 4 minutos y aguantó» descarta la rama rápida del catálogo y obliga a subir τ o k. Un episodio que **sí** acaba en disparo fija la curva casi por completo.
+
+**Detección del disparo.** El dispositivo está alimentado detrás del ICP, así que un disparo se lo lleva por delante. La firma es volver a arrancar con un estado térmico alto publicado hace segundos: `recoverICP()` lo detecta y registra el evento con la marca `disparo`, siempre como *probable*, nunca como certeza — un corte de la compañía con la casa cargada produce la misma señal.
+
+Un episodio se cierra tras 20 lecturas consecutivas por debajo del umbral, de modo que una bajada momentánea no lo parte en dos. Verificado con la réplica del código: 60 s a 34 A → un evento de 34,1 A; 30 s a 30 A + 5 s por debajo + 30 s a 36 A → un solo evento de 65 s y 36 A; dos sobrecargas separadas → dos eventos; 200 s a 28,0 A → ninguno.
+
+Se consulta en `/json_icp_log`. La escritura en EEPROM pasa por el guardado con *cooldown*, así que una ráfaga de episodios no castiga la flash.
+
 ### Inicialización: no se puede medir la temperatura del bimetal
 
 Es la limitación de fondo del modelo, y merece decirse explícitamente: **la temperatura real del ICP no es observable**. Sólo se puede estimar, y asumir «frío» al arrancar es la peor estimación posible — una casa que lleva horas con sus 25 A contratados tiene el bimetal al 59 %, y partir de 0 duplicaría el margen que el modelo cree tener en la siguiente sobrecarga (265 s en vez de 144 s a 40 A).

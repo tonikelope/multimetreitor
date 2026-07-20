@@ -969,6 +969,28 @@ static const float MAX_CONSUMO_VAL = 10000.0f;
 #define RULES_MAGIC 0x53   // marks a rules table written by this firmware (0x53: multi-action layout)
 #define ICP_MODEL_MAGIC 0x71  // marks thermal-image ICP parameters written by this firmware
 
+// ================== ICP FORENSIC LOG ===========
+// The manufacturer's envelope spans a factor ~80 in trip time, so no catalogue
+// can say where this particular breaker sits inside it. Only the breaker can.
+// Every episode above the conventional non-tripping current is recorded with
+// what it reached and whether it ended in a trip, which over time bounds the
+// real curve: "34 A for 4 minutes and it held" rules out the fast branch, and a
+// single genuine trip pins the curve down.
+#define MAX_ICP_EVENTS 12
+#define ICP_LOG_MAGIC 0x6C
+// An episode is closed after this many consecutive readings back below the
+// threshold, so a load that dips for a moment does not split into two.
+#define ICP_LOG_GRACE_SAMPLES 20
+
+struct IcpEvent {
+  uint32_t ts;        // epoch when the episode started (0 if no valid clock)
+  uint16_t durSec;    // duration above the threshold, seconds (saturating)
+  uint16_t iMaxCa;    // peak current in centiamps (0.01 A resolution)
+  uint8_t  nivelMax;  // peak danger level reached, 0-100 %
+  uint8_t  flags;     // bit0: ended in a probable trip (device lost power)
+};
+#define ICP_EV_TRIPPED 0x01
+
 enum RuleMetric : uint8_t {
   RM_CURRENT = 0,  // A
   RM_VOLTAGE = 1,  // V
@@ -1098,6 +1120,12 @@ struct AppConfig {
   int icpAvisoMax; // countdown span of the bar, in seconds: the bar is empty
                    // while at least this much time remains before the trip
   uint8_t icpModelMagic;
+
+  // Forensic log, appended last (same magic-guarded migration pattern).
+  IcpEvent icpLog[MAX_ICP_EVENTS];
+  uint8_t icpLogIndex;   // next slot to write (ring buffer)
+  uint8_t icpLogCount;   // stored events, saturating at MAX_ICP_EVENTS
+  uint8_t icpLogMagic;
 };
 
 // Layout guards: the append-without-version-bump migration is only safe while
@@ -1245,6 +1273,10 @@ void setDefaults() {
   config.icpTau = DEF_ICP_TAU;
   config.icpAvisoMax = DEF_ICP_AVISO_MAX;
   config.icpModelMagic = ICP_MODEL_MAGIC;
+  memset(config.icpLog, 0, sizeof(config.icpLog));
+  config.icpLogIndex = 0;
+  config.icpLogCount = 0;
+  config.icpLogMagic = ICP_LOG_MAGIC;
 
   config.consumoEnabled = DEF_CONSUMO_ENABLED;
   config.consumoEnAmperios = DEF_CONSUMO_TIPO_A;
@@ -1370,6 +1402,19 @@ void loadConfig() {
     if (isnan(config.icpK) || config.icpK < MIN_ICP_K || config.icpK > MAX_ICP_K) config.icpK = DEF_ICP_K;
     if (config.icpTau < MIN_ICP_TAU_S || config.icpTau > MAX_ICP_TAU_S) config.icpTau = DEF_ICP_TAU;
     if (config.icpAvisoMax < MIN_ICP_AVISO_S || config.icpAvisoMax > MAX_ICP_AVISO_S) config.icpAvisoMax = DEF_ICP_AVISO_MAX;
+  }
+
+  // Forensic log, appended after the model parameters. Same pattern: garbage
+  // from older firmware is discarded rather than wiping the whole config.
+  if (config.icpLogMagic != ICP_LOG_MAGIC) {
+    memset(config.icpLog, 0, sizeof(config.icpLog));
+    config.icpLogIndex = 0;
+    config.icpLogCount = 0;
+    config.icpLogMagic = ICP_LOG_MAGIC;
+    saveConfig();
+  } else {
+    if (config.icpLogIndex >= MAX_ICP_EVENTS) config.icpLogIndex = 0;
+    if (config.icpLogCount > MAX_ICP_EVENTS) config.icpLogCount = MAX_ICP_EVENTS;
   }
 }
 
@@ -1703,6 +1748,8 @@ void keepMQTTAlive() {
 }
 
 // ================== ICP RECOVERY (boot) ========
+static void icpLogAppend(uint32_t ts, uint16_t durSec, float iMax, uint8_t nivelMax, uint8_t flags);  // fwd
+
 void recoverICP() {
   icpRecuperado = false;
   publicarListo = false;
@@ -1759,6 +1806,16 @@ void recoverICP() {
     icpCarga = adjusted;
     icpRecuperado = true;
     logMessage(String(F("[ICP-RECOVER] Recovered to ")) + String(icpCarga, 2) + F("%"));
+
+    // Forensic marker: the device sits behind the breaker, so a trip takes it
+    // down too. Coming back with a hot retained state that was published only
+    // seconds ago is the signature of a trip (or of a mains cut with the house
+    // loaded) — exactly the event that would pin down the real curve, so it is
+    // recorded rather than lost. Flagged as probable, never as certain.
+    if (icpCarga >= 50.0f && secs > 0 && secs <= 180) {
+      icpLogAppend((uint32_t)tsRecibidoMQTT, (uint16_t)secs, NAN, (uint8_t)(icpCarga + 0.5f), ICP_EV_TRIPPED);
+      logMessage(F("[ICP-LOG] Probable trip recorded (hot state after reboot)."));
+    }
   } else {
     icpCarga = 0;
     logMessage(F("[ICP-RECOVER] TIMEOUT. ICP=0."));
@@ -1892,6 +1949,62 @@ float icpNivelPeligro() {
   if (win < 1.0f) win = 1.0f;
   if (left >= win) return 0.0f;
   return 100.0f * (1.0f - left / win);
+}
+
+// Appends one episode to the forensic ring buffer. Not saved to EEPROM here:
+// the caller decides, so a burst of episodes cannot hammer the flash.
+static void icpLogAppend(uint32_t ts, uint16_t durSec, float iMax, uint8_t nivelMax, uint8_t flags) {
+  IcpEvent &e = config.icpLog[config.icpLogIndex % MAX_ICP_EVENTS];
+  e.ts = ts;
+  e.durSec = durSec;
+  float ca = iMax * 100.0f;
+  e.iMaxCa = (isnan(ca) || ca < 0) ? 0 : (ca > 65535.0f ? 65535 : (uint16_t)ca);
+  e.nivelMax = nivelMax > 100 ? 100 : nivelMax;
+  e.flags = flags;
+  config.icpLogIndex = (uint8_t)((config.icpLogIndex + 1) % MAX_ICP_EVENTS);
+  if (config.icpLogCount < MAX_ICP_EVENTS) config.icpLogCount++;
+}
+
+// Tracks episodes above the non-tripping current and records them when they
+// end. Called once per cycle, right after computeICP().
+void icpLogUpdate() {
+  static bool active = false;
+  static unsigned long startMs = 0;
+  static uint32_t startTs = 0;
+  static float iMax = 0.0f;
+  static uint8_t nivelMax = 0;
+  static uint8_t belowCount = 0;
+
+  if (isnan(current) || config.icpNominal <= 0) return;   // stale/invalid reading
+  bool above = (current / config.icpNominal) > ICP_NEVER_TRIP_MULT;
+
+  if (above) {
+    belowCount = 0;
+    if (!active) {
+      active = true;
+      startMs = millis();
+      time_t now = getCurrentEpoch();
+      startTs = (now > 0) ? (uint32_t)now : 0;
+      iMax = 0.0f;
+      nivelMax = 0;
+    }
+    if (current > iMax) iMax = current;
+    float niv = icpNivelPeligro();
+    if (!isnan(niv) && niv > nivelMax) nivelMax = (uint8_t)(niv + 0.5f);
+    return;
+  }
+
+  if (!active) return;
+  if (++belowCount < ICP_LOG_GRACE_SAMPLES) return;   // brief dip, same episode
+
+  unsigned long durMs = millis() - startMs - (unsigned long)belowCount * config.refreshInterval;
+  unsigned long durS = durMs / 1000UL;
+  icpLogAppend(startTs, durS > 65535 ? 65535 : (uint16_t)durS, iMax, nivelMax, 0);
+  active = false;
+  belowCount = 0;
+  logMessage(String(F("[ICP-LOG] Episode: ")) + String(iMax, 2) + F(" A max, ") +
+             String(durS) + F(" s, level ") + String(nivelMax) + F("%"));
+  safeBackgroundSaveConfig();
 }
 
 // Seconds left before the modelled trip at the present current, or -1 when the
@@ -2511,6 +2624,7 @@ void readSensorsAndTriggerAlerts() {
 
   // 2) ICP
   computeICP();
+  icpLogUpdate();
 
   // 3) Alerts + transition logging
   AlertState alert = evaluateAlerts();
@@ -2974,6 +3088,36 @@ void handleJsonRules() {
   server.send(200, "application/json; charset=utf-8", out);
 }
 
+// --- /json_icp_log ---
+// Forensic record of every episode above the non-tripping current, newest
+// first. Streamed by hand rather than through ArduinoJson: a fixed-size table
+// needs no heap, and this endpoint may be polled while the loop is busy.
+void handleJsonIcpLog() {
+  char buf[160];
+  server.sendHeader("Cache-Control", "no-store");
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "application/json; charset=utf-8", "");
+
+  snprintf(buf, sizeof(buf),
+           "{\"nominal\":%.2f,\"umbral_registro_a\":%.2f,\"eventos\":[",
+           (double)config.icpNominal, (double)(ICP_NEVER_TRIP_MULT * config.icpNominal));
+  server.sendContent(buf);
+
+  // Walk the ring backwards from the most recent slot.
+  for (uint8_t n = 0; n < config.icpLogCount; n++) {
+    uint8_t idx = (uint8_t)((config.icpLogIndex + MAX_ICP_EVENTS - 1 - n) % MAX_ICP_EVENTS);
+    const IcpEvent &e = config.icpLog[idx];
+    snprintf(buf, sizeof(buf),
+             "%s{\"ts\":%lu,\"dur_s\":%u,\"i_max_a\":%.2f,\"nivel_max\":%u,\"disparo\":%s}",
+             n ? "," : "", (unsigned long)e.ts, (unsigned)e.durSec,
+             (double)e.iMaxCa / 100.0, (unsigned)e.nivelMax,
+             (e.flags & ICP_EV_TRIPPED) ? "true" : "false");
+    server.sendContent(buf);
+  }
+  server.sendContent("]}");
+  server.sendContent("");
+}
+
 // Fills one RuleActionDef from a JSON object, clamping every field.
 static void parseActionFromJson(JsonObject ao, RuleActionDef &act) {
   memset(&act, 0, sizeof(act));
@@ -3194,6 +3338,7 @@ void setupWeb() {
   server.on("/json", handleJson);
   server.on("/json_lcd", handleJsonLCD);
   server.on("/json_alerts", handleJsonAlerts);
+  server.on("/json_icp_log", handleJsonIcpLog);
   server.on("/json_rules", handleJsonRules);
   server.on("/save_rules", HTTP_POST, handleSaveRules);
   server.on("/rule_test", HTTP_POST, handleRuleTest);
