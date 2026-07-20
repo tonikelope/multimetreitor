@@ -353,7 +353,28 @@ Histéresis de 10 puntos con suelo positivo (con `icpUmbral = 10` la condición 
 
 **Verificación previa al despliegue.** Compila limpio (RAM 46 %, flash 49 %, IRAM 96 % — sin cambios respecto a HEAD). Tokens `%…%` del HTML y ramas del sustituidor en correspondencia exacta; claves i18n completas en ambos idiomas; JS validado sintáctica y funcionalmente en un DOM simulado. Simulación del comportamiento con la réplica exacta del código: sin alarma con 3/15/20/25/28 A sostenidos (tampoco con el umbral al 40 %), aviso a los 17 s con 50 A desde frío, a los 3 s con 64 A, a los 26 s con 40 A partiendo de una casa cargada, y silencio ante ráfagas de 40 A durante 2 s o arranques repetidos de 35 A durante 5 s.
 
-**La barra sigue midiendo peligro, no temperatura.** El estado térmico interno no es cero en uso normal —una casa que consume sus 25 A contratados deja el bimetal al 59 %—, así que mostrarlo en crudo dejaría la barra permanentemente medio llena y desperdiciaría todo su rango útil. Lo que se publica en LCD, web, MQTT, Rainmeter y motor de reglas es `icpNivelPeligro()`: el trayecto recorrido entre «no puede saltar» y «salta ahora», tomando como origen el nivel térmico de equilibrio a 1,13×In.
+### La barra es una cuenta atrás
+
+Se configura un **margen de aviso** en segundos (120 s por defecto) y la barra indica qué parte de ese margen se ha consumido ya: vacía mientras quede al menos ese tiempo —o mientras el consumo no pueda hacer saltar el ICP—, llena en el instante del disparo.
+
+La ventaja es que **el porcentaje significa lo mismo a cualquier intensidad**: con un margen de 120 s, el 50 % son 60 segundos restantes tanto en una sobrecarga de 33 A como en una de 64 A. Mostrar el nivel térmico no permite eso: el mismo 50 % de calor son diez segundos a 64 A y seis minutos a 33 A, y el número que hace falta es cuánto tiempo queda para ir a apagar algo.
+
+Verificado con la réplica del código (margen 120 s, umbral 50 %, casa que venía de 20 A):
+
+| Consumo | Avisa con | Margen real hasta el disparo |
+|---|---|---|
+| 30 A | no avisa (no puede saltar) | — |
+| 33 A | 59,4 s restantes | 52 s |
+| 36 A | 59,3 s restantes | 59 s |
+| 40 A | 59,7 s restantes | 60 s |
+| 50 A | 59,2 s restantes | 59 s |
+| 64 A | 47,1 s restantes (avisa al instante) | 48 s |
+
+El umbral en porcentaje se traduce por tanto a tiempo de forma directa, y la página lo dice en texto bajo el deslizador: «te avisará cuando queden N s para el salto». La memoria térmica sigue dentro del cálculo: un ICP que ya venía caliente tiene menos tiempo restante, así que la barra arranca más alta.
+
+*(Nota histórica: una versión anterior de este trabajo mostraba el nivel térmico normalizado. Se descartó porque el mismo porcentaje representaba márgenes de tiempo muy distintos según la corriente, que es justo lo que hace útil el indicador.)*
+
+**Se mantiene el principio de que la barra mide peligro, no temperatura.** El estado térmico interno no es cero en uso normal —una casa que consume sus 25 A contratados deja el bimetal al 59 %—, así que mostrarlo en crudo dejaría la barra permanentemente medio llena y desperdiciaría todo su rango útil. Lo que se publica en LCD, web, MQTT, Rainmeter y motor de reglas es `icpNivelPeligro()`: el trayecto recorrido entre «no puede saltar» y «salta ahora», tomando como origen el nivel térmico de equilibrio a 1,13×In.
 
 ```
 nivel = (H − H_seguro) / (1 − H_seguro),   H_seguro = (1,13 / k)²

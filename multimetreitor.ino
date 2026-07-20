@@ -269,10 +269,15 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
             <span data-i18n="nominalCurrent">Intensidad nominal:</span> <input type="number" step="0.1" min="5" max="80" name="icpNominal" value="%ICP_NOMINAL%"> A
           </div>
           <div class="icp-row">
+            <span data-i18n="warnWindow">Margen de aviso:</span>
+            <input type="number" min="15" max="1800" step="5" name="icpAvisoMax" id="icpAvisoMax" value="%ICP_AVISO%" style="width:80px;"> s
+            <div class="icp-slider-label" data-i18n="warnWindowDesc">La barra se llena durante estos segundos previos al salto: vacía = queda más tiempo (o no puede saltar), llena = salta ahora.</div>
+          </div>
+          <div class="icp-row">
             <span data-i18n="heatThreshold">Umbral de aviso:</span>
-            <input type="range" min="10" max="100" step="1" name="icpUmbral" value="%ICP_UMBRAL%" id="icpUmbralSlider" oninput="icpUmbralVal.value=value">
+            <input type="range" min="10" max="100" step="1" name="icpUmbral" value="%ICP_UMBRAL%" id="icpUmbralSlider" oninput="icpUmbralVal.value=value;if(window.refreshAviso)refreshAviso()">
             <output id="icpUmbralVal">%ICP_UMBRAL%%</output>
-            <div class="icp-slider-label" data-i18n="thresholdDesc">0 % = sin peligro (el ICP no puede saltar con ese consumo); 100 % = salta ahora.</div>
+            <div class="icp-slider-label" id="icpAvisoResumen"></div>
           </div>
           <button type="button" onclick="toggleCurve()" class="icp-curve-box-btn" data-i18n="adjustCurve">Ajustar curva de disparo</button>
           <div id="icp-curve-box" style="display:none;margin-top:13px;">
@@ -362,7 +367,9 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         refreshInterval:"Intervalo refresco (ms):", topicsPublished:"Topics donde se publica:",
         alerts:"Alertas", soundAlert:"Alerta sonora (buzzer)", icpThermalAlert:"Alerta ICP térmico",
         enableIcp:"Activar alerta ICP", nominalCurrent:"Intensidad nominal:", heatThreshold:"Umbral de aviso:",
-        thresholdDesc:"0 % = sin peligro (el ICP no puede saltar con ese consumo); 100 % = salta ahora.",
+        warnWindow:"Margen de aviso:",
+        warnWindowDesc:"La barra se llena durante estos segundos previos al salto: vacía = queda más tiempo (o no puede saltar), llena = salta ahora.",
+        warnMeans:"Te avisará cuando queden {s} s para el salto.",
         adjustCurve:"Ajustar curva de disparo", ratioIN:"Relación I/In",
         tripCold:"Desde frío", tripHot:"Precargado", neverTrips:"nunca salta",
         icpKLabel:"Umbral térmico (k):", icpKDesc:"Por debajo de este múltiplo el ICP nunca salta.",
@@ -397,7 +404,9 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         refreshInterval:"Refresh interval (ms):", topicsPublished:"Topics published to:",
         alerts:"Alerts", soundAlert:"Sound alert (buzzer)", icpThermalAlert:"Thermal ICP alert",
         enableIcp:"Enable ICP alert", nominalCurrent:"Nominal current:", heatThreshold:"Warning threshold:",
-        thresholdDesc:"0 % = no danger (the breaker cannot trip at that load); 100 % = tripping now.",
+        warnWindow:"Warning window:",
+        warnWindowDesc:"The bar fills over these seconds before the trip: empty = more time left (or it cannot trip), full = tripping now.",
+        warnMeans:"You will be warned when {s} s are left before the trip.",
         adjustCurve:"Adjust trip curve", ratioIN:"I/In ratio",
         tripCold:"From cold", tripHot:"Preloaded", neverTrips:"never trips",
         icpKLabel:"Thermal threshold (k):", icpKDesc:"Below this multiple the breaker never trips.",
@@ -527,11 +536,25 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         mk.classList.toggle('icp-modificado', Math.abs(k - ICP_DEF_K) > 0.001);
         mt.classList.toggle('icp-modificado', tau !== ICP_DEF_TAU);
       };
+      // Spells out what the threshold means in seconds, so the percentage is
+      // never something the user has to translate in their head.
+      window.refreshAviso = function() {
+        var el = document.getElementById('icpAvisoResumen');
+        var win = parseFloat(document.getElementById('icpAvisoMax').value);
+        var u = parseFloat(document.getElementById('icpUmbralSlider').value);
+        if (!el || isNaN(win) || isNaN(u)) return;
+        var d = I18N[CURRENT_LANG] || I18N.es;
+        var left = Math.round(win * (1 - u / 100));
+        el.textContent = d.warnMeans.replace('{s}', left);
+      };
+      refreshAviso();
       refreshCurva();
       ['icpK', 'icpTau'].forEach(function(id) {
         var inp = document.getElementById(id);
         if (inp) inp.addEventListener('input', refreshCurva);
       });
+      var avisoInp = document.getElementById('icpAvisoMax');
+      if (avisoInp) avisoInp.addEventListener('input', refreshAviso);
       var nomInp = document.querySelector('input[name="icpNominal"]');
       if (nomInp) nomInp.addEventListener('input', refreshCurva);
 
@@ -867,11 +890,6 @@ IPAddress dns(192, 168, 1, 1);
 // multiple of In no breaker trips, whatever its tolerance branch. Used to arm
 // the ICP alert so a steady legitimate load never raises one.
 #define ICP_NEVER_TRIP_MULT 1.13f
-// How much warning the ICP alert aims to give before the modelled trip. The
-// sensor averages over ~1.3 s and settles in ~2.5 s, so a genuinely fast trip
-// can never be beaten; this is the practical lead time for the overloads that
-// are actually observable.
-#define ICP_WARN_LEAD_S 120.0f
 #define NTP_WAIT_TIMEOUT_MS 30000
 #define NTP_RESYNC_INTERVAL_MS 86400000UL
 
@@ -912,6 +930,10 @@ enum LcdLang : uint8_t { LANG_ES = 0, LANG_EN = 1 };
 // (see evaluateAlerts). See docs/auditoria_icp.md.
 #define DEF_ICP_K 1.30f
 #define DEF_ICP_TAU 246
+// Countdown span of the ICP bar. The bar reads "percentage of this window
+// already used up", so with 120 s a 50 % threshold means "warn me when I have
+// 60 seconds left to react".
+#define DEF_ICP_AVISO_MAX 120
 #define DEF_ICP_COOLDOWN DEF_ICP_TAU   // tau2 (de-energized cooling) = tau1 for a passive bimetal
 #define DEF_CONSUMO_ENABLED false
 #define DEF_CONSUMO_TIPO_A false
@@ -932,6 +954,7 @@ static const int MIN_ICP_UMBRAL = 10, MAX_ICP_UMBRAL = 100;
 static const int MIN_ICP_COOLDOWN_S = 60, MAX_ICP_COOLDOWN_S = 7200;
 static const float MIN_ICP_K = 1.05f, MAX_ICP_K = 1.50f;
 static const int MIN_ICP_TAU_S = 10, MAX_ICP_TAU_S = 7200;
+static const int MIN_ICP_AVISO_S = 15, MAX_ICP_AVISO_S = 1800;
 static const float MIN_VOLTAGE_LIMIT = 0.0f, MAX_VOLTAGE_LIMIT = 300.0f;
 static const float MAX_CONSUMO_VAL = 10000.0f;
 
@@ -1072,6 +1095,8 @@ struct AppConfig {
   // by icpModelMagic.
   float icpK;      // asymptote: I/In below which the breaker never trips
   int icpTau;      // tau1: thermal time constant under load (s)
+  int icpAvisoMax; // countdown span of the bar, in seconds: the bar is empty
+                   // while at least this much time remains before the trip
   uint8_t icpModelMagic;
 };
 
@@ -1218,6 +1243,7 @@ void setDefaults() {
   config.icpCooldownTime = DEF_ICP_COOLDOWN;
   config.icpK = DEF_ICP_K;
   config.icpTau = DEF_ICP_TAU;
+  config.icpAvisoMax = DEF_ICP_AVISO_MAX;
   config.icpModelMagic = ICP_MODEL_MAGIC;
 
   config.consumoEnabled = DEF_CONSUMO_ENABLED;
@@ -1334,6 +1360,7 @@ void loadConfig() {
       int legacyCurve[6] = { 2700, 900, 180, 25, 7, 1 };
       for (int i = 0; i < 6; i++) config.icpCurveTimesUnused[i] = legacyCurve[i];
     }
+    config.icpAvisoMax = DEF_ICP_AVISO_MAX;
     config.icpModelMagic = ICP_MODEL_MAGIC;
     // Persist immediately: otherwise the migration re-runs on every boot and
     // silently overwrites the stored cooldown each time.
@@ -1342,6 +1369,7 @@ void loadConfig() {
   } else {
     if (isnan(config.icpK) || config.icpK < MIN_ICP_K || config.icpK > MAX_ICP_K) config.icpK = DEF_ICP_K;
     if (config.icpTau < MIN_ICP_TAU_S || config.icpTau > MAX_ICP_TAU_S) config.icpTau = DEF_ICP_TAU;
+    if (config.icpAvisoMax < MIN_ICP_AVISO_S || config.icpAvisoMax > MAX_ICP_AVISO_S) config.icpAvisoMax = DEF_ICP_AVISO_MAX;
   }
 }
 
@@ -1838,38 +1866,32 @@ void computeICP() {
 // What the user sees (LCD, web, MQTT, Rainmeter, rule engine): heat accumulated
 // towards the trip, 0-100 %, where 100 % is the trip itself.
 //
-// It is a DANGER indicator, and it moves continuously: it fills faster or
-// slower depending on the overload, and it empties as the bimetal cools. It
-// must never jump, because the user reads its rate of change as "how long do I
-// have to switch something off".
+float icpSegundosRestantes();  // fwd
+
+// The bar is a countdown expressed as a percentage of the configured warning
+// window (icpAvisoMax): it reads "how much of my reaction time is already
+// gone". Empty means at least the whole window remains — or that this load
+// cannot trip the breaker at all. Full means it trips now.
 //
-// Empty means no danger at all: the load is far enough below the trip point
-// that neither time nor a small extra appliance would get there. Full means the
-// breaker trips now. In between, "80 %" reads as "a bit more time or a bit more
-// load and it goes".
+// Chosen over showing the thermal level because the percentage then means the
+// same thing at every current: with a 120 s window, 50 % is 60 seconds left,
+// whatever the overload. The thermal level cannot do that — the same 50 % of
+// heat is ten seconds at 64 A and six minutes at 33 A — and the number the user
+// actually needs is how long they have to go and switch something off.
 //
-// It cannot be the raw thermal level, which is never zero in normal use (a
-// house steadily drawing its contracted 25 A leaves the bimetal at 59 %), so it
-// is measured from the heat the breaker settles at when carrying exactly the
-// current that can never trip it — ICP_NEVER_TRIP_MULT, the normative
-// conventional non-tripping current, and also the asymptote of the fast branch
-// of the manufacturer's envelope. Below that there is genuinely nothing to
-// worry about; above it the unit may or may not trip depending on where its
-// tolerance falls, which is precisely the region worth watching.
-//
-// The thermal memory is preserved: an overload starting from an already-warm
-// breaker crosses that point sooner, so the bar starts filling earlier.
+// It still moves continuously and never jumps: at constant current the time
+// left decreases one second per second, so the bar fills at a steady rate, and
+// it empties as soon as the load eases and the estimate stretches out again.
+// The thermal memory is inside icpSegundosRestantes(): an overload starting
+// from an already-warm breaker has less time left, so the bar starts higher.
 float icpNivelPeligro() {
   if (isnan(icpCarga)) return NAN;
-  float k = config.icpK;
-  if (isnan(k) || k < MIN_ICP_K) k = MIN_ICP_K;
-  if (k > MAX_ICP_K) k = MAX_ICP_K;
-  float safe = (ICP_NEVER_TRIP_MULT * ICP_NEVER_TRIP_MULT) / (k * k);
-  if (safe > 0.95f) safe = 0.95f;   // k at/below the non-tripping current
-  float p = ((icpCarga / 100.0f) - safe) / (1.0f - safe);
-  if (p < 0.0f) p = 0.0f;
-  if (p > 1.0f) p = 1.0f;
-  return 100.0f * p;
+  float left = icpSegundosRestantes();
+  if (left < 0.0f) return 0.0f;            // this load never trips
+  float win = (float)config.icpAvisoMax;
+  if (win < 1.0f) win = 1.0f;
+  if (left >= win) return 0.0f;
+  return 100.0f * (1.0f - left / win);
 }
 
 // Seconds left before the modelled trip at the present current, or -1 when the
@@ -2093,67 +2115,27 @@ AlertState evaluateAlerts() {
                    consumoVal >= config.consumoValor,
                    consumoVal < config.consumoValor * (1.0f - ALERT_HYST_CONSUMO_PCT));
 
-  // ICP alert. Two independent routes, because one alone fails in opposite ways:
+  // ICP alert: one single condition, because the bar is now a countdown and the
+  // threshold therefore reads directly as time left. With a 120 s window and a
+  // 50 % threshold the alert fires when 60 seconds remain, whatever the
+  // overload — the same percentage always means the same margin to react.
   //
-  //  A) IMMINENCE route — estimated time left before the thermal level reaches
-  //     the trip point drops below ICP_WARN_LEAD_S. Solving the model forward at
-  //     the present current: t = tau*ln((Heq - H)/(Heq - 1)), defined only while
-  //     Heq > 1, i.e. while the load really leads to a trip. Needed because the
-  //     thermal route alone is far too slow on a hard overload: at 2x In from
-  //     cold it takes ~94 s to cross a 75 % threshold, while a breaker on the
-  //     fast branch of the catalogue envelope trips in under 2 s. This warns as
-  //     soon as the trip is within ICP_WARN_LEAD_S (15 s into a 50 A overload
-  //     instead of 94 s), and — unlike a bare "current above k" test — stays
-  //     quiet on a 35 A burst that still has eight minutes of margin.
-  //
-  //  B) DANGER-LEVEL route — the displayed level (icpNivelPeligro(), the same
-  //     0-100 % the bar shows) is past the configured threshold, so the meaning
-  //     of icpUmbral matches what the user sees. Covers the slow, sustained
-  //     overloads between the two branches of the envelope (1.13x-1.30x In),
-  //     where a sensitive unit does trip and route A stays silent, and it is
-  //     where the model's memory pays off: a house that has been near the limit
-  //     for hours starts the overload already warm.
-  //
-  // Both routes are gated by ICP_NEVER_TRIP_MULT: below 1.13x In no breaker
-  // trips (the normative "conventional non-tripping current"), so a steady
-  // legitimate load can never raise an alarm however warm the bimetal sits.
-  // Hysteresis avoids chatter, with a positive floor so a low threshold still
-  // has a reachable clear condition.
+  // A level of 0 means either that this load cannot trip the breaker at all or
+  // that more than the whole window remains, so a steady legitimate load can
+  // never raise an alarm. Hysteresis with a positive floor keeps the buzzer from
+  // chattering around the threshold (with icpUmbral at its minimum, an absolute
+  // margin would make the clear condition unreachable).
   static bool icpLatch = false;
-  static uint8_t icpFastCount = 0;
-  float icpMult = (isnan(current) || config.icpNominal <= 0) ? 0.0f : current / config.icpNominal;
-  bool icpArmed = icpMult > ICP_NEVER_TRIP_MULT;
+  static uint8_t icpCount = 0;
+  float icpNivel = icpNivelPeligro();
+  if (isnan(icpNivel)) icpNivel = 0.0f;
   float icpClearAt = (float)config.icpUmbral - ALERT_HYST_ICP_PCT;
   if (icpClearAt < 1.0f) icpClearAt = 1.0f;
 
-  float icpKEff = config.icpK;
-  if (isnan(icpKEff) || icpKEff < MIN_ICP_K) icpKEff = MIN_ICP_K;
-  if (icpKEff > MAX_ICP_K) icpKEff = MAX_ICP_K;
-  float icpHeq = (icpMult * icpMult) / (icpKEff * icpKEff);
-  float icpH = icpCarga / 100.0f;
-  bool icpImminent = false;
-  if (icpHeq > 1.0f) {  // only then does the present load lead to a trip
-    float left = (icpH >= 1.0f)
-                   ? 0.0f
-                   : (float)config.icpTau * logf((icpHeq - icpH) / (icpHeq - 1.0f));
-    icpImminent = (left <= ICP_WARN_LEAD_S);
-  }
-  if (icpImminent) {
-    if (icpFastCount < ALERT_TRIGGER_SAMPLES) icpFastCount++;
-  } else {
-    icpFastCount = 0;
-  }
-
-  float icpNivel = icpNivelPeligro();
-  if (isnan(icpNivel)) icpNivel = 0.0f;
-  if (!config.icpEnabled || !icpArmed) {
-    icpLatch = false;
-    if (!config.icpEnabled) icpFastCount = 0;
-  } else if (icpFastCount >= ALERT_TRIGGER_SAMPLES || icpNivel >= (float)config.icpUmbral) {
-    icpLatch = true;
-  } else if (icpNivel < icpClearAt) {
-    icpLatch = false;
-  }
+  updateAlertLatch(icpLatch, icpCount,
+                   config.icpEnabled,
+                   icpNivel >= (float)config.icpUmbral,
+                   icpNivel < icpClearAt);
   st.icp     = icpLatch;
   st.sobre   = sobreLatch;
   st.sub     = subLatch;
@@ -2608,6 +2590,12 @@ void handleConfigPost() {
     if (tv > MAX_ICP_TAU_S) tv = MAX_ICP_TAU_S;
     config.icpTau = tv;
   }
+  if (server.hasArg("icpAvisoMax")) {
+    int av = server.arg("icpAvisoMax").toInt();
+    if (av < MIN_ICP_AVISO_S) av = MIN_ICP_AVISO_S;
+    if (av > MAX_ICP_AVISO_S) av = MAX_ICP_AVISO_S;
+    config.icpAvisoMax = av;
+  }
   if (server.hasArg("icpCooldown")) {
     int cool = server.arg("icpCooldown").toInt();
     if (cool < MIN_ICP_COOLDOWN_S) cool = MIN_ICP_COOLDOWN_S;
@@ -2706,6 +2694,7 @@ static bool configTokenValue(const char* tok, char* out, size_t n) {
   else if (!strcmp_P(tok, PSTR("LCD_ICP")))          lcdMaskChecked(LCD_ICP, out, n);
   else if (!strcmp_P(tok, PSTR("ICP_K")))            snprintf_P(out, n, PSTR("%.2f"), (double)config.icpK);
   else if (!strcmp_P(tok, PSTR("ICP_TAU")))          snprintf_P(out, n, PSTR("%d"), config.icpTau);
+  else if (!strcmp_P(tok, PSTR("ICP_AVISO")))        snprintf_P(out, n, PSTR("%d"), config.icpAvisoMax);
   else if (!strcmp_P(tok, PSTR("COOLDOWN")))         snprintf_P(out, n, PSTR("%d"), config.icpCooldownTime);
   else if (!strcmp_P(tok, PSTR("LAST_RESET_TIME")))  formatElapsedTimeTo(out, n, config.lastEnergyReset);
   else if (!strcmp_P(tok, PSTR("LANG")))             { strncpy_P(out, config.lcdLang == LANG_EN ? PSTR("en") : PSTR("es"), n); out[n-1] = '\0'; }
