@@ -282,10 +282,10 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
           <button type="button" onclick="toggleCurve()" class="icp-curve-box-btn" data-i18n="adjustCurve">Ajustar curva de disparo</button>
           <div id="icp-curve-box" style="display:none;margin-top:13px;">
             <div class="icp-row">
-              <label><b data-i18n="tripFromLabel">Salta a partir de:</b>
+              <label><b data-i18n="tripFromLabel">Aguanta siempre hasta:</b>
                 <input type="number" id="icpSaltaA" step="0.25" style="width:80px;"> A
               </label>
-              <div class="icp-slider-label" data-i18n="tripFromDesc">Por debajo de esta corriente tu ICP aguanta indefinidamente. El catálogo del fabricante admite un margen: cuanto menor sea, más sensible se supone el aparato.</div>
+              <div class="icp-slider-label" data-i18n="tripFromDesc">Por debajo de esta corriente tu ICP no salta nunca, por mucho que dure. No es un corte brusco: justo por encima tarda decenas de minutos, y cuanto mayor es el exceso antes salta (ver tabla). El catálogo admite un margen: cuanto menor lo pongas, más sensible supones el aparato.</div>
             </div>
             <div class="icp-row">
               <a href="#" onclick="toggleAvanzado();return false" style="font-size:0.92em;color:#397;" data-i18n="advanced">Ajustes avanzados</a>
@@ -383,8 +383,8 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         warnMeans:"Te avisará cuando queden {s} s para el salto.",
         adjustCurve:"Ajustar curva de disparo", ratioIN:"Relación I/In",
         tripCold:"Desde frío", tripHot:"Precargado", neverTrips:"nunca salta",
-        tripFromLabel:"Salta a partir de:",
-        tripFromDesc:"Por debajo de esta corriente tu ICP aguanta indefinidamente. El catálogo del fabricante admite un margen: cuanto menor sea, más sensible se supone el aparato.",
+        tripFromLabel:"Aguanta siempre hasta:",
+        tripFromDesc:"Por debajo de esta corriente tu ICP no salta nunca, por mucho que dure. No es un corte brusco: justo por encima tarda decenas de minutos, y cuanto mayor es el exceso antes salta (ver tabla). El catálogo admite un margen: cuanto menor lo pongas, más sensible supones el aparato.",
         advanced:"Ajustes avanzados",
         icpKLabel:"Umbral térmico (k):", icpKDesc:"Por debajo de este múltiplo el ICP nunca salta.",
         icpTauLabel:"Constante térmica (&tau;):", icpTauDesc:"Inercia térmica del bimetal: a mayor valor, más tarda en calentarse y en enfriarse. Se deriva de la curva del catálogo, edítalo solo si tienes datos propios.",
@@ -423,8 +423,8 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         warnMeans:"You will be warned when {s} s are left before the trip.",
         adjustCurve:"Adjust trip curve", ratioIN:"I/In ratio",
         tripCold:"From cold", tripHot:"Preloaded", neverTrips:"never trips",
-        tripFromLabel:"Trips above:",
-        tripFromDesc:"Below this current your breaker holds indefinitely. The manufacturer's catalogue allows a range: the lower the value, the more sensitive the unit is assumed to be.",
+        tripFromLabel:"Holds indefinitely up to:",
+        tripFromDesc:"Below this current your breaker never trips, however long the load lasts. It is not a sharp cutoff: just above it takes tens of minutes, and the greater the excess the sooner it goes (see table). The catalogue allows a range: the lower you set it, the more sensitive you assume the unit to be.",
         advanced:"Advanced settings",
         icpKLabel:"Thermal threshold (k):", icpKDesc:"Below this multiple the breaker never trips.",
         icpTauLabel:"Thermal constant (&tau;):", icpTauDesc:"Thermal inertia of the bimetal: the higher the value, the longer it takes to heat up and to cool down. Derived from the catalogue curve; edit only with data of your own.",
