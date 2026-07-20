@@ -1032,6 +1032,11 @@ static const size_t   SAVE_RULES_MAX_BODY = 8000;        // reject oversized /sa
 // ================== MQTT TOPICS =================
 #define MQTT_TOPIC_STATE "electricidad/casa/estado"
 #define MQTT_TOPIC_ICP_RECOVERY "electricidad/casa/icp"
+// One message per overload episode, retained so a late subscriber still sees
+// the last one. The EEPROM ring is kept as the offline copy: retained holds a
+// single message per topic, so without something archiving these the history
+// would live nowhere.
+#define MQTT_TOPIC_ICP_EVENT "electricidad/casa/icp_evento"
 #define MQTT_TOPIC_ALERTS_CONFIG "electricidad/casa/alertas_config"
 #define MQTT_TOPIC_LOG "multimetreitor/serial"
 #define MQTT_TOPIC_STATUS "multimetreitor/status"
@@ -1972,6 +1977,19 @@ static void icpLogAppend(uint32_t ts, uint16_t durSec, float iMax, uint8_t nivel
   e.flags = flags;
   config.icpLogIndex = (uint8_t)((config.icpLogIndex + 1) % MAX_ICP_EVENTS);
   if (config.icpLogCount < MAX_ICP_EVENTS) config.icpLogCount++;
+
+  // Also publish it: the ring only holds MAX_ICP_EVENTS, while anything
+  // subscribed to this topic can archive them without limit.
+  if (mqttClient.connected()) {
+    char payload[160];
+    int m = snprintf(payload, sizeof(payload),
+                     "{\"ts\":%lu,\"dur_s\":%u,\"i_max_a\":%.2f,\"nivel_max\":%u,"
+                     "\"disparo\":%s,\"nominal\":%.2f,\"k\":%.2f,\"tau\":%d}",
+                     (unsigned long)e.ts, (unsigned)e.durSec, (double)e.iMaxCa / 100.0,
+                     (unsigned)e.nivelMax, (flags & ICP_EV_TRIPPED) ? "true" : "false",
+                     (double)config.icpNominal, (double)config.icpK, config.icpTau);
+    if (m > 0 && m < (int)sizeof(payload)) mqttClient.publish(MQTT_TOPIC_ICP_EVENT, payload, true);
+  }
 }
 
 // Tracks episodes above the non-tripping current and records them when they
