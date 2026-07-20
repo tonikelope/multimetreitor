@@ -434,7 +434,11 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       var lb = document.getElementById('langBtn'); if(lb) lb.textContent = (lang==='es'?'EN':'ES');
       CURRENT_LANG = lang;
       document.documentElement.lang = lang;
-      if (window.refreshCurva) window.refreshCurva();  // the computed curve has translated cells
+      // Anything whose text the script writes has to be redrawn here: applyLang
+      // only replaces elements carrying data-i18n, and these are built by JS.
+      if (window.refreshCurva) window.refreshCurva();   // trip-time table
+      if (window.refreshAviso) window.refreshAviso();   // "warns when N s are left"
+      if (window.syncSaltaA)  window.syncSaltaA();      // "= 32.50 A · tau 246 s"
       if (window.rulesRefreshLang) window.rulesRefreshLang();
       try { localStorage.setItem('mmt_lang', lang); } catch(e){}
     };
