@@ -284,6 +284,9 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
             <div class="icp-row">
               <label><b data-i18n="tripFromLabel">Aguanta siempre hasta:</b>
                 <input type="number" id="icpSaltaA" step="0.25" style="width:80px;"> A
+                &nbsp;=&nbsp;
+                <input type="number" name="icpK" id="icpK" min="1.05" max="1.50" step="0.01" value="%ICP_K%" style="width:70px;">
+                <span data-i18n="timesIn">&times; In</span>
                 <span id="icpRatio" style="color:#397;font-size:0.95em;"></span>
               </label>
               <div class="icp-slider-label" data-i18n="tripFromDesc">Por debajo de esta corriente tu ICP no salta nunca, por mucho que dure. No es un corte brusco: justo por encima tarda decenas de minutos, y cuanto mayor es el exceso antes salta (ver tabla). El catálogo admite un margen: cuanto menor lo pongas, más sensible supones el aparato.</div>
@@ -292,12 +295,6 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
               <a href="#" onclick="toggleAvanzado();return false" style="font-size:0.92em;color:#397;" data-i18n="advanced">Ajustes avanzados</a>
             </div>
             <div id="icp-avanzado" style="display:none;">
-              <div class="icp-row">
-                <label><b data-i18n="icpKLabel">Umbral térmico (k):</b>
-                  <input type="number" name="icpK" id="icpK" min="1.05" max="1.50" step="0.01" value="%ICP_K%" style="width:80px;"> &times; In
-                </label>
-                <div class="icp-slider-label" data-i18n="icpKDesc">Por debajo de este múltiplo el ICP nunca salta.</div>
-              </div>
               <div class="icp-row">
                 <label><b data-i18n="icpTauLabel">Constante térmica (&tau;):</b>
                   <input type="number" name="icpTau" id="icpTau" min="10" max="7200" step="1" value="%ICP_TAU%" style="width:80px;"> s
@@ -385,10 +382,10 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         adjustCurve:"Ajustar curva de disparo", ratioIN:"Relación I/In",
         tripCold:"Desde frío", tripHot:"Precargado", neverTrips:"nunca salta",
         tripFromLabel:"Aguanta siempre hasta:",
-        ratioIs:"= {k} × In  (el catálogo admite de 1,13 a 1,45)",
+        timesIn:"× In", ratioIn:"(dentro de la banda del catálogo: 1,13 a 1,45)",
+        ratioOut:"(fuera de la banda del catálogo: 1,13 a 1,45)",
         tripFromDesc:"Por debajo de esta corriente tu ICP no salta nunca, por mucho que dure. No es un corte brusco: justo por encima tarda decenas de minutos, y cuanto mayor es el exceso antes salta (ver tabla). El catálogo admite un margen: cuanto menor lo pongas, más sensible supones el aparato.",
         advanced:"Ajustes avanzados",
-        icpKLabel:"Umbral térmico (k):", icpKDesc:"Por debajo de este múltiplo el ICP nunca salta.",
         icpTauLabel:"Constante térmica (&tau;):", icpTauDesc:"Inercia térmica del bimetal: a mayor valor, más tarda en calentarse y en enfriarse. Se deriva de la curva del catálogo, edítalo solo si tienes datos propios.",
         curveNote:"Curva calculada: tiempo hasta el 100 % con consumo constante. «Precargado» = la casa venía consumiendo el 90 % del umbral.",
         cooldown:"Enfriamiento:", cooldownDesc:"Constante de enfriamiento sin consumo.",
@@ -426,10 +423,10 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         adjustCurve:"Adjust trip curve", ratioIN:"I/In ratio",
         tripCold:"From cold", tripHot:"Preloaded", neverTrips:"never trips",
         tripFromLabel:"Holds indefinitely up to:",
-        ratioIs:"= {k} × In  (the catalogue allows 1.13 to 1.45)",
+        timesIn:"× In", ratioIn:"(inside the catalogue band: 1.13 to 1.45)",
+        ratioOut:"(outside the catalogue band: 1.13 to 1.45)",
         tripFromDesc:"Below this current your breaker never trips, however long the load lasts. It is not a sharp cutoff: just above it takes tens of minutes, and the greater the excess the sooner it goes (see table). The catalogue allows a range: the lower you set it, the more sensitive you assume the unit to be.",
         advanced:"Advanced settings",
-        icpKLabel:"Thermal threshold (k):", icpKDesc:"Below this multiple the breaker never trips.",
         icpTauLabel:"Thermal constant (&tau;):", icpTauDesc:"Thermal inertia of the bimetal: the higher the value, the longer it takes to heat up and to cool down. Derived from the catalogue curve; edit only with data of your own.",
         curveNote:"Computed curve: time to reach 100 % at constant load. \"Preloaded\" = the house was already drawing 90 % of the threshold.",
         cooldown:"Cooldown:", cooldownDesc:"Cooling time constant with no load.",
@@ -520,34 +517,42 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         var v = n ? parseFloat(n.value) : NaN;
         return (isNaN(v) || v <= 0) ? 25 : v;
       }
-      // "Salta a partir de" -> k, tau and cooldown
-      window.saltaAChanged = function() {
-        var a = parseFloat(document.getElementById('icpSaltaA').value);
-        if (isNaN(a)) return;
-        var k = a / nominalVal();
+      // Amps and ratio are the same setting seen from two sides (amps = k x In),
+      // so either can be typed and the other follows. tau is recomputed from k
+      // in both cases; editing tau by hand under "advanced" does not feed back,
+      // so a hand-tuned value is never overwritten.
+      function applyK(k) {
         if (k < 1.05) k = 1.05;
         if (k > 1.50) k = 1.50;
         document.getElementById('icpK').value = k.toFixed(2);
         var t = tauFromK(k);
         document.getElementById('icpTau').value = t;
         document.getElementById('icpCooldown').value = Math.max(60, t);
+        syncSaltaA(true);
         refreshCurva();
+      }
+      window.saltaAChanged = function() {           // typed in amps
+        var a = parseFloat(document.getElementById('icpSaltaA').value);
+        if (!isNaN(a)) applyK(a / nominalVal());
       };
-      // Editing the raw values only refreshes the amps field, never the other
-      // way round, so a hand-tuned tau is not overwritten.
-      window.syncSaltaA = function() {
+      window.ratioChanged = function() {            // typed as a ratio of In
+        var k = parseFloat(document.getElementById('icpK').value);
+        if (!isNaN(k)) applyK(k);
+      };
+      // Refreshes the amps field and the catalogue hint from the current k.
+      // skipAmps avoids fighting the field the user is typing in.
+      window.syncSaltaA = function(skipAmps) {
         var k = parseFloat(document.getElementById('icpK').value);
         var el = document.getElementById('icpSaltaA');
         var nom = nominalVal();
         el.min = (1.05 * nom).toFixed(2);
         el.max = (1.50 * nom).toFixed(2);
-        if (!isNaN(k)) el.value = (k * nom).toFixed(2);
-        // The amps are just k x In; showing the ratio keeps the link visible,
-        // and the ratio is what the catalogue is expressed in.
+        if (!isNaN(k) && !skipAmps) el.value = (k * nom).toFixed(2);
+        else if (!isNaN(k) && document.activeElement !== el) el.value = (k * nom).toFixed(2);
         var r = document.getElementById('icpRatio');
         if (r && !isNaN(k)) {
           var d = I18N[CURRENT_LANG] || I18N.es;
-          r.textContent = d.ratioIs.replace('{k}', k.toFixed(2));
+          r.textContent = (k < 1.13 || k > 1.45) ? d.ratioOut : d.ratioIn;
         }
       };
 
@@ -618,10 +623,10 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       syncSaltaA();
       refreshAviso();
       refreshCurva();
-      ['icpK', 'icpTau'].forEach(function(id) {
-        var inp = document.getElementById(id);
-        if (inp) inp.addEventListener('input', function(){ syncSaltaA(); refreshCurva(); });
-      });
+      var kInp = document.getElementById('icpK');
+      if (kInp) kInp.addEventListener('input', ratioChanged);
+      var tauInp = document.getElementById('icpTau');
+      if (tauInp) tauInp.addEventListener('input', refreshCurva);
       var saltaInp = document.getElementById('icpSaltaA');
       if (saltaInp) saltaInp.addEventListener('input', saltaAChanged);
       var avisoInp = document.getElementById('icpAvisoMax');
