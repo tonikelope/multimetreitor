@@ -1186,6 +1186,7 @@ bool ruleActClearEdge[MAX_RULES] = { false };
 float icpCarga = 0.0f;
 unsigned long lastIcpMillis = 0;
 bool icpPrimed = false;
+float icpEpisodioIMax = 0.0f;   // peak current of the overload episode in progress
 
 time_t ntpEpoch = 0;
 unsigned long ntpSyncMillis = 0;
@@ -1202,6 +1203,7 @@ bool wifiOk = false, mqttOk = false;
 bool icpRecuperado = false;
 bool publicarListo = false;
 float icpRecibidoMQTT = NAN;
+float iRecibidoMQTT = 0.0f;   // current reported by the retained payload
 time_t tsRecibidoMQTT = 0;
 bool icpRecibido = false, tsRecibido = false;
 
@@ -1644,6 +1646,10 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       }
       icpRecibidoMQTT = valor;
       tsRecibidoMQTT = doc.containsKey("timestamp") ? doc["timestamp"].as<unsigned long>() : 0;
+      // Optional since the forensic log: the current at the last publish, used
+      // to attribute a trip to an actual load (absent in older payloads).
+      iRecibidoMQTT = doc.containsKey("imax") ? doc["imax"].as<float>() : 0.0f;
+      if (iRecibidoMQTT <= 0.0f && doc.containsKey("i")) iRecibidoMQTT = doc["i"].as<float>();
       icpRecibido = true;
       tsRecibido = true;
       logMessage(F("[ICP-RECOVER] MQTT JSON received"));
@@ -1756,9 +1762,10 @@ void recoverICP() {
   icpRecibido = false;
   tsRecibido = false;
   icpRecibidoMQTT = 0;
+  iRecibidoMQTT = 0;
   tsRecibidoMQTT = 0;
 
-  if (!mqttClient.connected()) { 
+  if (!mqttClient.connected()) {
     icpCarga = 0;
     publicarListo = true;
     logMessage(F("[ICP-RECOVER] MQTT not connected, skipping retained wait."));
@@ -1813,8 +1820,10 @@ void recoverICP() {
     // loaded) — exactly the event that would pin down the real curve, so it is
     // recorded rather than lost. Flagged as probable, never as certain.
     if (icpCarga >= 50.0f && secs > 0 && secs <= 180) {
-      icpLogAppend((uint32_t)tsRecibidoMQTT, (uint16_t)secs, NAN, (uint8_t)(icpCarga + 0.5f), ICP_EV_TRIPPED);
-      logMessage(F("[ICP-LOG] Probable trip recorded (hot state after reboot)."));
+      icpLogAppend((uint32_t)tsRecibidoMQTT, (uint16_t)secs, iRecibidoMQTT,
+                   (uint8_t)(icpRecibidoMQTT + 0.5f), ICP_EV_TRIPPED);
+      logMessage(String(F("[ICP-LOG] Probable trip recorded: ")) + String(iRecibidoMQTT, 2) +
+                 F(" A, level ") + String(icpRecibidoMQTT, 0) + F("%"));
     }
   } else {
     icpCarga = 0;
@@ -1971,9 +1980,11 @@ void icpLogUpdate() {
   static bool active = false;
   static unsigned long startMs = 0;
   static uint32_t startTs = 0;
-  static float iMax = 0.0f;
   static uint8_t nivelMax = 0;
   static uint8_t belowCount = 0;
+  float &iMax = icpEpisodioIMax;   // published in the retained topic, so a trip
+                                   // that kills the device is still attributable
+                                   // to a current when it comes back
 
   if (isnan(current) || config.icpNominal <= 0) return;   // stale/invalid reading
   bool above = (current / config.icpNominal) > ICP_NEVER_TRIP_MULT;
@@ -2372,9 +2383,16 @@ void publishAllMQTT() {
     static unsigned long lastIcpPublishMs = 0;
     int icpRounded = (int)round(icpCarga);
     if (abs(icpRounded - lastIcpPublished) >= 2 || millis() - lastIcpPublishMs >= 60000UL) {
-      char icpPayload[64];
+      // 'i' and 'imax' exist for the forensic log: if the breaker trips it
+      // takes the device down with it, so the current at that moment can only
+      // be known from what was last published. Without them a recorded trip
+      // says "it went" but not at how many amps, which is the one number
+      // needed to calibrate the curve against this breaker.
+      char icpPayload[112];
       int m = snprintf(icpPayload, sizeof(icpPayload),
-                       "{\"valor\":%.2f,\"timestamp\":%ld}", icpCarga, ts);
+                       "{\"valor\":%.2f,\"timestamp\":%ld,\"i\":%.2f,\"imax\":%.2f}",
+                       icpCarga, ts, (double)(isnan(current) ? 0.0f : current),
+                       (double)icpEpisodioIMax);
       if (m > 0 && m < (int)sizeof(icpPayload)) {
         mqttClient.publish(MQTT_TOPIC_ICP_RECOVERY, icpPayload, true);
         lastIcpPublished = icpRounded;
