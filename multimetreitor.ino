@@ -270,7 +270,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
           </div>
           <div class="icp-row">
             <span data-i18n="heatThreshold">Umbral de aviso:</span>
-            <input type="range" min="10" max="100" step="1" name="icpUmbral" value="%ICP_UMBRAL%" id="icpUmbralSlider" oninput="icpUmbralVal.value=value;if(window.refreshAviso)refreshAviso()">
+            <input type="range" min="10" max="100" step="1" name="icpUmbral" value="%ICP_UMBRAL%" id="icpUmbralSlider" oninput="icpUmbralVal.value=value+'%';if(window.refreshAviso)refreshAviso()">
             <output id="icpUmbralVal">%ICP_UMBRAL%%</output>
             <div class="icp-slider-label" id="icpAvisoResumen"></div>
           </div>
