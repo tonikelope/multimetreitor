@@ -135,10 +135,6 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
     @keyframes spin {
       100% { transform: rotate(360deg); }
     }
-    .icp-modificado {
-      background: #fff5b0 !important;
-      border-color: #e9ce33 !important;
-    }
     #lastResetTime { font-weight: bold; color: #1e90ff; }
 
     /* ===== Tabs ===== */
@@ -281,16 +277,16 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
           <button type="button" onclick="toggleCurve()" class="icp-curve-box-btn" data-i18n="adjustCurve">Ajustar curva de disparo</button>
           <div id="icp-curve-box" style="display:none;margin-top:13px;">
             <div class="icp-row">
-              <label><b data-i18n="tripFromLabel">Sensibilidad del ICP:</b>
-                <input type="number" name="icpK" id="icpK" min="1.05" max="1.50" step="0.01" value="%ICP_K%" style="width:70px;">
-                <span data-i18n="timesIn">&times; In</span>
-              </label>
-              <div class="icp-slider-label" id="icpRatio"></div>
+              <b data-i18n="tripFromLabel">Sensibilidad del ICP:</b>
+              <input type="range" min="0" max="100" step="1" name="icpSensibilidad" value="%ICP_SENS%" id="icpSensSlider" style="width:120px;vertical-align:middle;" oninput="icpSensVal.value=value+'%';if(window.refreshCurva)refreshCurva()">
+              <output id="icpSensVal">%ICP_SENS%%</output>
+              <div class="icp-slider-label"><span data-i18n="sensLow">lenta</span> &rarr; <span data-i18n="sensHigh">peor caso</span></div>
             </div>
+            <input type="hidden" name="icpK" id="icpK" value="%ICP_K%">
             <input type="hidden" name="icpTau" id="icpTau" value="%ICP_TAU%">
             <input type="hidden" name="icpCooldown" id="icpCooldown" value="%COOLDOWN%">
             <table class="icp-curve-table" id="icpCurveTable">
-              <tr><th data-i18n="ratioIN">Relación I/In</th><th data-i18n="tripCold">Desde frío</th><th data-i18n="tripHot">Precargado</th></tr>
+              <tr><th data-i18n="ratioIN">Relación I/In</th><th data-i18n="tripAt">Salta en</th></tr>
             </table>
             <button type="button" onclick="restaurarCurva()" class="icp-curve-box-btn" style="background:#2b4;margin-top:13px;" data-i18n="restoreDefaults">Restaurar valores por defecto</button>
           </div>
@@ -359,10 +355,9 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         warnWindow:"Margen de aviso:",
         warnMeans:"Te avisará cuando queden {s} s para el salto.",
         adjustCurve:"Ajustar curva de disparo", ratioIN:"Relación I/In",
-        tripCold:"Desde frío", tripHot:"Precargado", neverTrips:"nunca salta",
+        neverTrips:"nunca salta",
+        tripAt:"Salta en", sensLow:"lenta", sensHigh:"peor caso",
         tripFromLabel:"Sensibilidad del ICP:",
-        timesIn:"× In",
-        ratioMeans:"= {a} A · &tau; {t} s",
         restoreDefaults:"Restaurar valores por defecto", currentPowerAlert:"Alerta por <b>corriente/potencia</b>",
         overvoltageAlert:"Alerta por <b>sobretensión</b>", undervoltageAlert:"Alerta por <b>subtensión</b>",
         selectMetrics:"Selecciona qué métricas quieres mostrar en pantalla:", voltage:"Voltaje",
@@ -394,10 +389,9 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         warnWindow:"Warning window:",
         warnMeans:"You will be warned when {s} s are left before the trip.",
         adjustCurve:"Adjust trip curve", ratioIN:"I/In ratio",
-        tripCold:"From cold", tripHot:"Preloaded", neverTrips:"never trips",
+        neverTrips:"never trips",
+        tripAt:"Trips in", sensLow:"slow", sensHigh:"worst case",
         tripFromLabel:"ICP sensitivity:",
-        timesIn:"× In",
-        ratioMeans:"= {a} A · &tau; {t} s",
         restoreDefaults:"Restore defaults", currentPowerAlert:"<b>Current/power</b> alert",
         overvoltageAlert:"<b>Overvoltage</b> alert", undervoltageAlert:"<b>Undervoltage</b> alert",
         selectMetrics:"Select which metrics to show on the display:", voltage:"Voltage",
@@ -438,7 +432,6 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       // only replaces elements carrying data-i18n, and these are built by JS.
       if (window.refreshCurva) window.refreshCurva();   // trip-time table
       if (window.refreshAviso) window.refreshAviso();   // "warns when N s are left"
-      if (window.syncSaltaA)  window.syncSaltaA();      // "= 32.50 A · tau 246 s"
       if (window.rulesRefreshLang) window.rulesRefreshLang();
       try { localStorage.setItem('mmt_lang', lang); } catch(e){}
     };
@@ -472,61 +465,33 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         box.style.display = (box.style.display == 'none' || box.style.display == '') ? 'block' : 'none';
       };
 
-      // k and tau are not independent: fitting the manufacturer's curve ties
-      // them together as tau = 449/k^2.3 (within 0.5 %, far inside the ~10 %
-      // error of reading the printed graph). So the form asks for the single
-      // number that has a physical meaning in amps — the current above which
-      // this breaker eventually trips, k*In — and derives the rest. The raw
-      // values stay editable under "advanced" for when the forensic log says
-      // this particular unit does not follow the catalogue family.
-      function tauFromK(k) { return Math.round(449.0 / Math.pow(k, 2.3)); }
+      // Sensitivity selector model: k and tau are fixed (hidden inputs), fitted to
+      // the slow branch of the catalogue curve (tau = 449/k^2.3 ties them). The only
+      // control is icpSensibilidad (0-100 %): it slides the assumed thermal preload
+      // from the slow branch (0) to the fast/worst-case branch (100), spanning the
+      // whole band with one knob. ICP_SENS_FLOOR_MAX must match the firmware constant.
+      var ICP_SENS_FLOOR_MAX = 0.922;
       function nominalVal() {
         var n = document.querySelector('input[name="icpNominal"]');
         var v = n ? parseFloat(n.value) : NaN;
         return (isNaN(v) || v <= 0) ? 25 : v;
       }
-      // The ratio is the only thing to set. tau and the cooldown are derived
-      // from it (they are not free: fitting the catalogue curve ties them to k),
-      // and the amps are just k x In, shown as text so the number means
-      // something in the units the house is measured in.
-      window.ratioChanged = function() {
-        var el = document.getElementById('icpK');
-        var k = parseFloat(el.value);
-        if (isNaN(k)) return;
-        var kc = Math.min(1.50, Math.max(1.05, k));
-        var t = tauFromK(kc);
-        document.getElementById('icpTau').value = t;
-        document.getElementById('icpCooldown').value = Math.max(60, t);
-        syncSaltaA();
+      window.restaurarCurva = function() {
+        var s = document.getElementById('icpSensSlider');
+        if (s) s.value = 100;                       // worst case = the safe default
+        var o = document.getElementById('icpSensVal');
+        if (o) o.value = '100%';
         refreshCurva();
       };
-      // Restates the ratio in amps and says whether it falls inside the band
-      // the manufacturer's catalogue allows.
-      window.syncSaltaA = function() {
-        var k = parseFloat(document.getElementById('icpK').value);
-        var r = document.getElementById('icpRatio');
-        if (!r || isNaN(k)) return;
-        var d = I18N[CURRENT_LANG] || I18N.es;
-        var txt = d.ratioMeans.replace('{a}', (k * nominalVal()).toFixed(2))
-                              .replace('{t}', document.getElementById('icpTau').value);
-        // innerHTML, not textContent: ratioMeans carries a &tau; entity.
-        r.innerHTML = txt;
-      };
 
-      // Thermal-image defaults, calibrated against the official ICP-M curve.
-      var ICP_DEF_K = 1.30, ICP_DEF_TAU = 246, ICP_DEF_COOL = 246;
-
-      window.restaurarCurva = function() {
-        document.getElementById('icpK').value = ICP_DEF_K.toFixed(2);
-        ratioChanged();   // tau and cooldown follow from k
-      };
-
-      // Trip time from the model: cold t = tau*ln(m^2/(m^2-k^2)); preloaded with
-      // Ip replaces the numerator by (m^2 - Ip^2). Same formula as the firmware,
-      // so the table always shows what the device will actually do.
-      function tripTime(m, k, tau, ip) {
-        var den = m * m - k * k;
-        var num = m * m - ip * ip;
+      // Trip time from the model: t = tau*ln((Heq - floor)/(Heq - 1)), Heq=(m/k)^2,
+      // where floor is the assumed preload thermal state (0..<1) set by the
+      // selector. Same math as the firmware, so the table shows what the device does.
+      function tripTime(m, k, tau, floor) {
+        var heq = (m * m) / (k * k);
+        if (heq <= 1) return null;
+        if (floor >= 1) floor = 0.999;
+        var num = heq - floor, den = heq - 1;
         if (den <= 0 || num <= 0) return null;
         return tau * Math.log(num / den);
       }
@@ -539,15 +504,21 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       window.refreshCurva = function() {
         var k = parseFloat(document.getElementById('icpK').value);
         var tau = parseFloat(document.getElementById('icpTau').value);
+        var sEl = document.getElementById('icpSensSlider');
+        var sens = sEl ? parseFloat(sEl.value) : 100;
+        var oEl = document.getElementById('icpSensVal');
+        if (oEl && !isNaN(sens)) oEl.value = sens + '%';
         var tbl = document.getElementById('icpCurveTable');
         if (!tbl) return;
-        if (isNaN(k) || isNaN(tau)) {  // field being edited/emptied: blank the table
+        if (isNaN(k) || isNaN(tau) || isNaN(sens)) {  // being edited: blank the table
           while (tbl.rows.length > 1) tbl.deleteRow(1);
           return;
         }
+        // The selector picks where in the band we sit: sens/100 of the maximum
+        // preload floor. 0 = slow branch, 100 = fast (worst-case) branch.
+        var floor = (sens / 100) * ICP_SENS_FLOOR_MAX;
         var nomEl = document.querySelector('input[name="icpNominal"]');
         var nom = nomEl ? parseFloat(nomEl.value) : NaN;
-        var d = I18N[CURRENT_LANG] || I18N.es;
         while (tbl.rows.length > 1) tbl.deleteRow(1);
         var mults = [1.20, 1.45, 1.60, 2.00, 2.55, 3.00];
         for (var i = 0; i < mults.length; ++i) {
@@ -556,12 +527,8 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
           var lbl = m.toFixed(2);
           if (!isNaN(nom) && nom > 0) lbl += ' (' + (m * nom).toFixed(1) + ' A)';
           r.insertCell(-1).textContent = lbl;
-          r.insertCell(-1).textContent = fmtSecs(tripTime(m, k, tau, 0));
-          r.insertCell(-1).textContent = fmtSecs(tripTime(m, k, tau, 0.9 * k));
+          r.insertCell(-1).textContent = fmtSecs(tripTime(m, k, tau, floor));
         }
-        // Highlight the ratio when it is away from the catalogue default.
-        var mk = document.getElementById('icpK');
-        if (mk) mk.classList.toggle('icp-modificado', Math.abs(k - ICP_DEF_K) > 0.001);
       };
       // Spells out what the threshold means in seconds, so the percentage is
       // never something the user has to translate in their head.
@@ -574,15 +541,12 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         var left = Math.round(win * (1 - u / 100));
         el.textContent = d.warnMeans.replace('{s}', left);
       };
-      syncSaltaA();
       refreshAviso();
       refreshCurva();
-      var kInp = document.getElementById('icpK');
-      if (kInp) kInp.addEventListener('input', ratioChanged);
       var avisoInp = document.getElementById('icpAvisoMax');
       if (avisoInp) avisoInp.addEventListener('input', refreshAviso);
       var nomInp = document.querySelector('input[name="icpNominal"]');
-      if (nomInp) nomInp.addEventListener('input', function(){ syncSaltaA(); refreshCurva(); });
+      if (nomInp) nomInp.addEventListener('input', refreshCurva);
 
       function updateLCD() {
         fetch('/json_lcd').then(r=>r.json()).then(j=>{
@@ -946,21 +910,24 @@ enum LcdLang : uint8_t { LANG_ES = 0, LANG_EN = 1 };
 #define DEF_ICP_ENABLED false
 #define DEF_ICP_NOMINAL 25.0f
 #define DEF_ICP_UMBRAL 75
-// Thermal-image model (IEC 60255-149). Defaults calibrated against the official
-// Merlin Gerin ICP-M trip curve (Multi 9 catalogue, C32N/C60N ICP-M): k is the
-// asymptote (I/In below which the breaker never trips) and tau the thermal time
-// constant. The catalogue draws an envelope whose two branches asymptote at
-// 1.13 and 1.45 In; k=1.30 is the midpoint of THAT range, which in the time
-// domain lands near the slow branch (135 s at 2x In vs 1.7-156 s in the
-// catalogue). The alert compensates with a fast route on instantaneous current
-// (see evaluateAlerts). See docs/auditoria_icp.md.
-#define DEF_ICP_K 1.30f
-#define DEF_ICP_TAU 246
+// Thermal-image model (IEC 60255-149). k and tau are fixed, fitted to the SLOW
+// (best-case) branch of the user's UNE 20317 trip curve; the sensitivity selector
+// (config.icpSensibilidad) then slides the assumed thermal preload from that slow
+// branch up to the FAST (worst-case) branch, so a single control spans the whole
+// catalogue band without ever touching k or tau. See docs/auditoria_icp.md.
+#define DEF_ICP_K 1.07f
+#define DEF_ICP_TAU 384
 // Countdown span of the ICP bar. The bar reads "percentage of this window
 // already used up", so with 120 s a 50 % threshold means "warn me when I have
 // 60 seconds left to react".
 #define DEF_ICP_AVISO_MAX 120
 #define DEF_ICP_COOLDOWN DEF_ICP_TAU   // tau2 (de-energized cooling) = tau1 for a passive bimetal
+// ICP sensitivity selector (%). 0 = slow branch (relaxed), 100 = fast branch
+// (worst case, warns earliest). Default 100 so it never warns late out of the box.
+#define DEF_ICP_SENS 100
+// Thermal preload floor assumed at 100 % sensitivity: 0.922 reproduces the fast
+// branch of the UNE curve. The selector scales it linearly (sens/100 * this).
+static const float ICP_SENS_FLOOR_MAX = 0.922f;
 #define DEF_CONSUMO_ENABLED false
 #define DEF_CONSUMO_TIPO_A false
 #define DEF_CONSUMO_VAL 0.0f
@@ -981,6 +948,7 @@ static const int MIN_ICP_COOLDOWN_S = 60, MAX_ICP_COOLDOWN_S = 7200;
 static const float MIN_ICP_K = 1.05f, MAX_ICP_K = 1.50f;
 static const int MIN_ICP_TAU_S = 10, MAX_ICP_TAU_S = 7200;
 static const int MIN_ICP_AVISO_S = 15, MAX_ICP_AVISO_S = 1800;
+static const int MIN_ICP_SENS = 0, MAX_ICP_SENS = 100;
 static const float MIN_VOLTAGE_LIMIT = 0.0f, MAX_VOLTAGE_LIMIT = 300.0f;
 static const float MAX_CONSUMO_VAL = 10000.0f;
 
@@ -1004,6 +972,7 @@ static const float MAX_CONSUMO_VAL = 10000.0f;
 // single genuine trip pins the curve down.
 #define MAX_ICP_EVENTS 12
 #define ICP_LOG_MAGIC 0x6C
+#define ICP_SENS_MAGIC 0x5A   // marks the ICP sensitivity selector written by this firmware
 // An episode is closed after this many consecutive readings back below the
 // threshold, so a load that dips for a moment does not split into two.
 #define ICP_LOG_GRACE_SAMPLES 20
@@ -1157,6 +1126,11 @@ struct AppConfig {
   uint8_t icpLogIndex;   // next slot to write (ring buffer)
   uint8_t icpLogCount;   // stored events, saturating at MAX_ICP_EVENTS
   uint8_t icpLogMagic;
+
+  // ICP sensitivity selector (0-100 %), appended last with its own magic guard so
+  // an older config's garbage here is defaulted rather than trusted.
+  uint8_t icpSensibilidad;
+  uint8_t icpSensMagic;
 };
 
 // Layout guards: the append-without-version-bump migration is only safe while
@@ -1310,6 +1284,8 @@ void setDefaults() {
   config.icpLogIndex = 0;
   config.icpLogCount = 0;
   config.icpLogMagic = ICP_LOG_MAGIC;
+  config.icpSensibilidad = DEF_ICP_SENS;
+  config.icpSensMagic = ICP_SENS_MAGIC;
 
   config.consumoEnabled = DEF_CONSUMO_ENABLED;
   config.consumoEnAmperios = DEF_CONSUMO_TIPO_A;
@@ -1448,6 +1424,22 @@ void loadConfig() {
   } else {
     if (config.icpLogIndex >= MAX_ICP_EVENTS) config.icpLogIndex = 0;
     if (config.icpLogCount > MAX_ICP_EVENTS) config.icpLogCount = MAX_ICP_EVENTS;
+  }
+
+  // ICP sensitivity selector, appended after the forensic log. Older firmware has
+  // garbage here: default to worst-case (100 %) and, on this one-time migration,
+  // re-fit k/tau to the sensitivity model so the selector spans the band the same
+  // way for every config (the previous k/tau were a different calibration).
+  if (config.icpSensMagic != ICP_SENS_MAGIC) {
+    config.icpSensibilidad = DEF_ICP_SENS;
+    config.icpK = DEF_ICP_K;
+    config.icpTau = DEF_ICP_TAU;
+    config.icpCooldownTime = DEF_ICP_COOLDOWN;
+    config.icpSensMagic = ICP_SENS_MAGIC;
+    saveConfig();
+    logMessage(F("[ICP] Sensitivity model initialised (k/tau recalibrated)."));
+  } else if (config.icpSensibilidad > MAX_ICP_SENS) {
+    config.icpSensibilidad = DEF_ICP_SENS;
   }
 }
 
@@ -1899,10 +1891,10 @@ void computeICP() {
   //
   // Best available estimate: the thermal equilibrium for the current being
   // measured right now, since whatever the house is drawing at boot it has
-  // most likely been drawing for a while. It is capped at the safe point
-  // (equilibrium at ICP_NEVER_TRIP_MULT) so a single reading taken during a
-  // spike can never raise an alarm on its own — the seed only avoids starting
-  // cold; everything above that has to be earned by integrating real time.
+  // most likely been drawing for a while. It is capped at the sensitivity floor
+  // (always below the trip) so a single reading taken during a spike can never
+  // raise an alarm on its own — the seed only avoids starting cold; everything
+  // above that has to be earned by integrating real time.
   //
   // Whatever recoverICP() restored from the retained topic wins if it is
   // higher: that path knows about heat accumulated BEFORE the reboot (breaker
@@ -1919,7 +1911,10 @@ void computeICP() {
     if (kSeed > MAX_ICP_K) kSeed = MAX_ICP_K;
     float multSeed = (config.icpNominal > 0) ? (current / config.icpNominal) : 0.0f;
     float seed = (multSeed * multSeed) / (kSeed * kSeed);
-    float safe = (ICP_NEVER_TRIP_MULT * ICP_NEVER_TRIP_MULT) / (kSeed * kSeed);
+    // Cap at the sensitivity floor (<= ICP_SENS_FLOOR_MAX < 1), exactly what
+    // icpSegundosRestantes assumes, so the seed can never sit at or past the trip.
+    // With k below the conventional non-trip current, (1.13/k)^2 would exceed 1.
+    float safe = (config.icpSensibilidad / 100.0f) * ICP_SENS_FLOOR_MAX;
     if (seed > safe) seed = safe;
     if (isnan(icpCarga) || 100.0f * seed > icpCarga) icpCarga = 100.0f * seed;
     logMessage(String(F("[ICP] Seeded at ")) + String(icpCarga, 1) + F("% thermal"));
@@ -2076,6 +2071,12 @@ float icpSegundosRestantes() {
   float heq = (mult * mult) / (k * k);
   if (heq <= 1.0f) return -1.0f;
   float h = icpCarga / 100.0f;
+  // Sensitivity selector: assume the bimetal entered this overload at least this
+  // preheated. 100 % = the worst-case (fast) branch, so the countdown becomes the
+  // worst-case time-to-trip for the present current; the real integrated heat still
+  // wins when it is higher, so an already-hot breaker is never underestimated.
+  float floor = (config.icpSensibilidad / 100.0f) * ICP_SENS_FLOOR_MAX;
+  if (h < floor) h = floor;
   if (h >= 1.0f) return 0.0f;
   float tau = (float)config.icpTau;
   if (tau < 1.0f) tau = 1.0f;
@@ -2766,6 +2767,12 @@ void handleConfigPost() {
     if (tv > MAX_ICP_TAU_S) tv = MAX_ICP_TAU_S;
     config.icpTau = tv;
   }
+  if (server.hasArg("icpSensibilidad")) {
+    int sv = server.arg("icpSensibilidad").toInt();
+    if (sv < MIN_ICP_SENS) sv = MIN_ICP_SENS;
+    if (sv > MAX_ICP_SENS) sv = MAX_ICP_SENS;
+    config.icpSensibilidad = (uint8_t)sv;
+  }
   if (server.hasArg("icpAvisoMax")) {
     int av = server.arg("icpAvisoMax").toInt();
     if (av < MIN_ICP_AVISO_S) av = MIN_ICP_AVISO_S;
@@ -2871,6 +2878,7 @@ static bool configTokenValue(const char* tok, char* out, size_t n) {
   else if (!strcmp_P(tok, PSTR("ICP_K")))            snprintf_P(out, n, PSTR("%.2f"), (double)config.icpK);
   else if (!strcmp_P(tok, PSTR("ICP_TAU")))          snprintf_P(out, n, PSTR("%d"), config.icpTau);
   else if (!strcmp_P(tok, PSTR("ICP_AVISO")))        snprintf_P(out, n, PSTR("%d"), config.icpAvisoMax);
+  else if (!strcmp_P(tok, PSTR("ICP_SENS")))         snprintf_P(out, n, PSTR("%d"), config.icpSensibilidad);
   else if (!strcmp_P(tok, PSTR("COOLDOWN")))         snprintf_P(out, n, PSTR("%d"), config.icpCooldownTime);
   else if (!strcmp_P(tok, PSTR("LAST_RESET_TIME")))  formatElapsedTimeTo(out, n, config.lastEnergyReset);
   else if (!strcmp_P(tok, PSTR("LANG")))             { strncpy_P(out, config.lcdLang == LANG_EN ? PSTR("en") : PSTR("es"), n); out[n-1] = '\0'; }
