@@ -330,7 +330,7 @@ Actions are **edge-triggered**: the activate message is sent once when the condi
 
 The two rules in the screenshots drive a water heater through its own MQTT topic (`cmnd/calentador/Power`) so it does not add load while the ICP is close to tripping. It is the same heater the Rainmeter skin reports as `calentador_estado` and `calentador_corriente`.
 
-- **Turn the heater off** (*Apagar termo*): when **ICP load > 0%** OR **Current > 30 A**, publish `OFF` (and `ON` on clear), retained.
+- **Turn the heater off** (*Apagar termo*): when **ICP load > 0%** OR **Current > 30 A**, publish `OFF`, retained.
 - **Turn the heater on** (*Arrancar termo*): when **ICP load = 0%** AND **Current < 18 A**, publish `ON`, retained.
 
 Together they keep the heater running only while there is comfortable headroom, and cut it the moment the breaker starts to heat up or the current climbs.
