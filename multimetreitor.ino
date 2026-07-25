@@ -921,7 +921,9 @@ enum LcdLang : uint8_t { LANG_ES = 0, LANG_EN = 1 };
 // already used up", so with 120 s a 50 % threshold means "warn me when I have
 // 60 seconds left to react".
 #define DEF_ICP_AVISO_MAX 120
-#define DEF_ICP_COOLDOWN DEF_ICP_TAU   // tau2 (de-energized cooling) = tau1 for a passive bimetal
+#define DEF_ICP_COOLDOWN 576           // tau2 ~= 1.5*tau1: de-energized cooling (no source, just convection)
+                                       // is slower than energized heating, so err on retaining residual
+                                       // heat after a trip (matches the worst-case philosophy elsewhere)
 // ICP sensitivity selector (%). 0 = slow branch (relaxed), 100 = fast branch
 // (worst case, warns earliest). Default 100 so it never warns late out of the box.
 #define DEF_ICP_SENS 100

@@ -132,6 +132,8 @@ It ships with a **web configuration panel** served by the device itself and a **
 
 In Spain the **ICP** (*Interruptor de Control de Potencia*) is the main breaker the utility uses to enforce your contracted power. Draw more current than your tariff allows for long enough and it trips, leaving the house dark. It is a **thermal-magnetic** device: a bimetal strip that bends as it heats (for slow, inverse-time overloads) plus a magnetic coil for instantaneous short-circuit trips. MULTIMETREITOR models the **thermal** half so it can warn you *seconds before* the bimetal lets go, while you can still go and switch something off.
 
+This models a **physical thermal-magnetic ICP** (the Merlin Gerin ICP-M type). If your contracted power is enforced by the **electronic meter** instead (*telegestión* / *modo maxímetro*, with no physical breaker doing the cut-off in your panel), the trip behaviour is set by the meter's firmware and this model does not describe it, though as a conservative early warning it is still useful.
+
 </div>
 
 ### The reference curve
@@ -206,6 +208,8 @@ The countdown then assumes `H` is at least `floor`, but the **real integrated he
 - **100%, the worst case and the default.** With `floor = 0.922` the breaker is assumed to be nearly preheated, which is the **fast edge** of the band and gives the shortest, most cautious time to trip. It is the default because a false alarm is a minor annoyance, whereas a missed trip is a dark house.
 - **0%, the slow case.** With `floor = 0` the breaker starts cold, which is the **slow edge** of the band and gives the latest possible warning.
 
+Note that at the 100% default, for an **isolated** overload the countdown is in practice a fixed worst-case trip curve: the assumed `floor` dominates the little heat a single episode integrates in time, so the result is close to a plain trip-curve lookup. The integrator earns its keep in **sustained or back-to-back overloads**, and in **surviving a reboot** with a still-hot breaker (see [Persistence](#persistence) and [Cooling](#cooling)), where the real integrated heat climbs above the `floor` and takes over.
+
 At the worst-case default (with In = 25 A) the model reproduces the fast edge of the reference image:
 
 </div>
@@ -223,7 +227,7 @@ At the worst-case default (with In = 25 A) the model reproduces the fast edge of
 
 Cooling is not modelled as a separate rule. It is the very same equation relaxing towards a *lower* equilibrium. When the current drops, `Heq` falls (it follows the square of the current), so `H` decays **exponentially** towards it, all the way down to 0 with no load. This replaces the old linear behaviour that went from 100% to 0% over a fixed number of seconds.
 
-The de-energized cooling constant is `tau2`, used when the breaker draws essentially nothing (below 5% of In, meaning the house is off, the mains are down or the breaker has already tripped). For a **passive bimetal, cooling is as slow as heating**, so `tau2 = tau = 384 s` by design. The two are kept as separate fields only because the standard allows them to differ. After a reboot, the elapsed offline cooling is applied in closed form, `H = H_stored * exp(-t_off / tau2)`. If there is no valid NTP clock the cooling is skipped entirely, which is the conservative choice: keep the last known heat rather than assume it cooled.
+The de-energized cooling constant is `tau2`, used when the breaker draws essentially nothing (below 5% of In, meaning the house is off, the mains are down or the breaker has already tripped). De-energized cooling has no internal heat source, only convection to ambient, so it is **slower** than energized heating: `tau2` defaults to `576 s`, about **1.5 times** `tau`, deliberately erring on the side of retaining residual heat after a trip. They are kept as separate fields because the standard allows them to differ, and `tau2` can be retuned from a real logged trip. After a reboot, the elapsed offline cooling is applied in closed form, `H = H_stored * exp(-t_off / tau2)`. If there is no valid NTP clock the cooling is skipped entirely, which is the conservative choice: keep the last known heat rather than assume it cooled.
 
 </div>
 
