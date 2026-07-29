@@ -17,7 +17,7 @@ It ships with a **web configuration panel** served by the device itself and a **
 <div align="justify">
 
 - 📊 **Real-time measurement** via the PZEM-004T v3: voltage (V), current (A), power (W), energy (kWh), frequency (Hz) and power factor.
-- 🔥 **ICP thermal model**: a first-order thermal-image model (IEC 60255-149) of the main breaker's bimetal that tracks how much of its trip time is already used up, driven by a single sensitivity selector set to the worst case by default. It warns you *before* the utility cuts your power for drawing too much. See [ICP thermal model](#-icp-thermal-model).
+- 🔥 **ICP thermal model**: a first-order thermal-image model (IEC 60255-149) of the main breaker's bimetal, integrated continuously from the measured current, shown as a bar that reads empty in ordinary use and fills as the breaker approaches its trip. It warns you *before* the utility cuts your power for drawing too much. See [ICP thermal model](#-icp-thermal-model).
 - 🚨 **Configurable alerts**: ICP, overvoltage, undervoltage and consumption (by amperes or watts), with an optional **buzzer**.
 - ⚙️ **Rules / Triggers**: up to 6 user-defined rules that publish an MQTT message or call a webhook when your conditions on the live measurements (current, voltage, power, ICP load, and so on) are met, with AND/OR logic and anti-bounce persistence. Enough to shed a load before the ICP trips. See [Rules / Triggers](#-rules--triggers).
 - 🖥️ **16x2 I2C LCD** with metrics selectable through a bitmask, plus WiFi and MQTT status indicators.
@@ -185,7 +185,7 @@ t = tau * ln((Heq - H) / (Heq - 1))         valid while Heq > 1, that is while I
 
 <div align="justify">
 
-These are `computeICP()` (the integrator) and `icpSegundosRestantes()` (the forward solve) in `multimetreitor.ino`.
+These are `computeICP()` (the integrator, which also arms the bar's zero point), `icpNivelPeligro()` (the bar) and `icpSegundosRestantes()` (the forward solve) in `multimetreitor.ino`.
 
 </div>
 
@@ -193,7 +193,7 @@ These are `computeICP()` (the integrator) and `icpSegundosRestantes()` (the forw
 
 <div align="justify">
 
-The whole tolerance band sits behind **one** control, the *ICP sensitivity* slider (0 to 100%), so there are no cryptic parameters to tune. It leaves `k` and `tau` untouched, since changing them would make the reading twitchy, and instead sets a **preheat floor**, the minimum thermal state the bimetal is assumed to have started this overload from:
+The whole tolerance band sits behind **one** control, the *ICP sensitivity* slider (0 to 100%), so there are no cryptic parameters to tune. It leaves `k` and `tau` untouched, since changing them would make the reading twitchy, and instead sets a **preheat floor**, the thermal state the bimetal is assumed to be in when the device has no way of knowing it:
 
 </div>
 
@@ -203,14 +203,12 @@ floor = (sensitivity / 100) * FLOOR_MAX         FLOOR_MAX = 0.922
 
 <div align="justify">
 
-The countdown then assumes `H` is at least `floor`, but the **real integrated heat still wins whenever it is higher**, so an already-hot breaker is never underestimated:
-
 - **100%, the worst case and the default.** With `floor = 0.922` the breaker is assumed to be nearly preheated, which is the **fast edge** of the band and gives the shortest, most cautious time to trip. It is the default because a false alarm is a minor annoyance, whereas a missed trip is a dark house.
 - **0%, the slow case.** With `floor = 0` the breaker starts cold, which is the **slow edge** of the band and gives the latest possible warning.
 
-Note that at the 100% default, for an **isolated** overload the countdown is in practice a fixed worst-case trip curve: the assumed `floor` dominates the little heat a single episode integrates in time, so the result is close to a plain trip-curve lookup. The integrator earns its keep in **sustained or back-to-back overloads**, and in **surviving a reboot** with a still-hot breaker (see [Persistence](#persistence) and [Cooling](#cooling)), where the real integrated heat climbs above the `floor` and takes over.
+That floor applies where the thermal state is genuinely unknown, which is **at boot**: it caps the seed the device starts from (see [Persistence](#persistence)). Once the model has been integrating measured current there is a real thermal history, and that history is what the bar, the countdown and the alert use. An earlier version applied the floor to the countdown at all times, which sounds conservative but quietly destroyed the integrator's whole purpose: with a floor of 0.922 and a house sitting at a perfectly normal 14% to 56% of trip heat, the assumed value always won, and the reading became a function of the instantaneous current with no memory of the preceding hour at all.
 
-At the worst-case default (with In = 25 A) the model reproduces the fast edge of the reference image:
+At the worst-case boot assumption (with In = 25 A) the model reproduces the fast edge of the reference image:
 
 </div>
 
@@ -235,27 +233,57 @@ The de-energized cooling constant is `tau2`, used when the breaker draws essenti
 
 <div align="justify">
 
-What you see on the LCD, web panel, MQTT and Rainmeter is a **countdown bar** rather than the raw heat. It reads *how much of your reaction time is already gone*, as a percentage of a configurable **warning window** (120 s by default):
+What you see on the LCD, web panel, MQTT and Rainmeter is the thermal state `H` itself, **rescaled onto the band where the breaker is actually in danger**: empty at a zero point `H0`, full at the trip.
 
 </div>
 
 ```
-bar = 100 * (1 - t_left / window)       it is 0 when t_left >= window, or when this load can never trip
+bar = 100 * (H - H0) / (1 - H0)         clamped to 0..100
 ```
 
 <div align="justify">
 
-Shown this way, the percentage means the same thing at every current. With a 120 s window, 50% is always 60 seconds left, whereas the raw heat would be ten seconds at 64 A and six minutes at 33 A. The alert fires, and the buzzer sounds, when the bar reaches the **warning threshold**, that is when
+`H0` is not a constant. It is fixed at the instant the modelled time to trip first falls below a configurable **warning window** (120 s by default), which is simply the model solved backwards for that time, and then **frozen** until the bar empties by itself:
 
 </div>
 
 ```
-t_left <= window * (1 - threshold / 100)
+H0 = max( Heq - (Heq - 1) * e^(window/tau) ,  1/k² )
 ```
 
 <div align="justify">
 
-For example, a 120 s window with a 40% threshold warns you when **72 s or less** remain before the trip, which is `120 * (1 - 0.40)`. An alert must persist for `ALERT_TRIGGER_SAMPLES = 3` consecutive readings before it latches, so with the PZEM's averaging of roughly 1.3 s the confirmed warning lands a few seconds after the overload actually begins.
+The floor `1/k²` is the equilibrium heat of drawing **exactly the contracted current**, 87.3% with the default `k`. Below that the breaker is not in danger by definition, so the bar stays empty throughout ordinary use however much the house draws, and the floor also guarantees the bar can always empty again once the house is back inside its contract. The bar arms on temperature alone whenever `H` is already above that floor, so a house that has been sitting *above* its contract for a while is already showing a bar rather than having one pop out part-full the moment the load steps up.
+
+Freezing `H0` is the whole point of the design. Recompute it every cycle and the bar is tied to the *present* current, and the time-to-trip estimate has a pole at `I = k*In`: the bar then leaps between empty and half full over a couple of amps and disappears entirely on a small dip, which is what an earlier countdown-style bar did. Frozen, the bar just follows `H` up the heating curve and back down the **real cooling curve**, so easing the load reads as the breaker cooling down over a minute or two instead of as the indicator vanishing.
+
+While the bar climbs, it is nonetheless still a pure function of the time left, *independent of the current*:
+
+</div>
+
+```
+bar = (e^(window/tau) - e^(t_left/tau)) / (e^(window/tau) - 1)
+```
+
+<div align="justify">
+
+so the **warning threshold**, the bar level at which the alert latches and the buzzer sounds, still reads directly as a margin to react. With the default 120 s window and `tau`:
+
+</div>
+
+| Threshold | Buzzer starts with |
+|:---------:|:------------------:|
+| 10% | about 110 s left |
+| 25% | about 93 s left |
+| 40% | about 76 s left |
+| 50% | about 65 s left |
+| 75% | about 34 s left |
+
+<div align="justify">
+
+This gives **two staged warnings**: the bar leaving zero is the silent visual one, and the threshold is where the buzzer, the LCD banner and the MQTT flag join in. Sounding the buzzer for the whole window would be unbearable and would throw the quiet stage away.
+
+That table holds for the mild, drawn-out overloads where the window is what limits the warning. Past roughly 1.2x the contracted current the floor takes over and the margin is capped by physics instead: at 1.6x In the breaker trips about 117 s after the overload starts, and at 2.4x In in about 40 s from cold, so there is simply no minute of warning left to give. An alert must also persist for `ALERT_TRIGGER_SAMPLES = 3` consecutive readings before it latches, so with the PZEM's averaging of roughly 1.3 s the confirmed warning lands a few seconds after the overload actually begins.
 
 </div>
 
