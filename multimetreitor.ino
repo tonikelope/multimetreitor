@@ -1475,11 +1475,16 @@ void loadConfig() {
 }
 
 // ================== WIFI =======================
+void readSensorsAndTriggerAlerts();  // fwd: the boot waits keep watching the mains
+
 // Blocks at most timeoutMs waiting for a connection; returns whether it connected.
+// Keeps measuring throughout: this is up to 2x20 s of the boot, and a breaker
+// does not wait for DHCP.
 static bool waitWiFiConnected(unsigned long timeoutMs) {
   unsigned long start = millis();
   while (WiFi.status() != WL_CONNECTED) {
     if (millis() - start > timeoutMs) return false;
+    readSensorsAndTriggerAlerts();
     delay(50);
     yield();
   }
@@ -1584,6 +1589,7 @@ void setupTime() {
   while (!ntpOK) {
     handleOTA();
     server.handleClient();  // keep the web UI responsive during the NTP wait
+    readSensorsAndTriggerAlerts();
     yield();
     time_t now = time(nullptr);
     if (now > 1609459200) {  // >= 2021-01-01, valid time
@@ -1611,6 +1617,7 @@ void setupTime() {
     while (millis() - t0 < 50) {
       handleOTA();
       server.handleClient();
+      readSensorsAndTriggerAlerts();
       yield();
     }
   }
@@ -1768,6 +1775,7 @@ void setupMQTT() {
     while (millis() - t0 < 1000) {
       handleOTA();
       server.handleClient();
+      readSensorsAndTriggerAlerts();
       yield();
     }
   }
@@ -1820,18 +1828,21 @@ void recoverICP() {
   iRecibidoMQTT = 0;
   tsRecibidoMQTT = 0;
 
+  // These bail-outs used to zero icpCarga. They must not any more: the model has
+  // been integrating measured current since the first loop of setup(), so by the
+  // time we get here it may already hold real thermal history — and losing it is
+  // exactly backwards, because reaching this point means the broker is missing
+  // and the measurement is all there is.
   if (!mqttClient.connected()) {
-    icpCarga = 0;
     publicarListo = true;
     logMessage(F("[ICP-RECOVER] MQTT not connected, skipping retained wait."));
     return;
   }
 
   if (getCurrentEpoch() == -1) {
-    icpCarga = 0;
     icpRecuperado = false;
     publicarListo = true;
-    logMessage(F("[ICP-RECOVER] NTP failed: ICP=0."));
+    logMessage(F("[ICP-RECOVER] NTP failed: keeping the measured thermal state."));
     return;
   }
 
@@ -1843,6 +1854,7 @@ void recoverICP() {
     handleOTA();
     mqttClient.loop();
     server.handleClient();
+    readSensorsAndTriggerAlerts();
     yield();
   }
   mqttClient.loop();
@@ -1865,7 +1877,13 @@ void recoverICP() {
     // evaluateAlerts before the first computeICP() clamps it).
     if (isnan(adjusted) || adjusted < 0.0f) adjusted = 0.0f;
     if (adjusted > 100.0f) adjusted = 100.0f;
-    icpCarga = adjusted;
+    // Take the higher of the two estimates rather than overwriting. They cover
+    // different things: the retained value knows about heat accumulated BEFORE
+    // the reboot (breaker tripped or mains lost, so there was no current to
+    // infer it from), while icpCarga has been integrating measured current
+    // during the boot waits. Overwriting would throw away up to ~75 s of real
+    // measurement; taking the max errs towards warning early, as elsewhere.
+    if (isnan(icpCarga) || adjusted > icpCarga) icpCarga = adjusted;
     icpRecuperado = true;
     logMessage(String(F("[ICP-RECOVER] Recovered to ")) + String(icpCarga, 2) + F("%"));
 
@@ -1881,8 +1899,9 @@ void recoverICP() {
                  F(" A, level ") + String(icpRecibidoMQTT, 0) + F("%"));
     }
   } else {
-    icpCarga = 0;
-    logMessage(F("[ICP-RECOVER] TIMEOUT. ICP=0."));
+    // No retained state to recover — but not a reason to discard what the model
+    // measured during the boot waits, which is the only estimate available here.
+    logMessage(F("[ICP-RECOVER] TIMEOUT. Keeping the measured thermal state."));
   }
   publicarListo = true;
 }
@@ -2771,15 +2790,17 @@ void evaluateRules() {
   startIdx = (uint8_t)((startIdx + 1) % MAX_RULES);
 }
 
+// Measuring, modelling and warning do NOT depend on the network. This runs from
+// the first loop of setup(): it is also called from every blocking wait in the
+// boot sequence (WiFi, NTP, MQTT, retained-state), because those add up to ~75 s
+// in the worst case — and the worst case is precisely a power cut, where the
+// router is booting too and the whole house gets switched back on at once. The
+// breaker can trip during that window, so it is the last moment to be blind.
+//
+// Only the two steps that genuinely need the network wait for publicarListo:
+// the rule engine (which fires webhooks) and the MQTT publish. The buzzer, the
+// LCD banner and the thermal model do not.
 void readSensorsAndTriggerAlerts() {
-  static bool once = false;
-  if (!publicarListo) {
-    if (!once) {
-      Serial.println(F("[MAIN] Waiting for NTP/ICP recovery..."));
-      once = true;
-    }
-    return;
-  }
   if (millis() - lastUpdate < config.refreshInterval) return;
   lastUpdate = millis();
 
@@ -2817,6 +2838,18 @@ void readSensorsAndTriggerAlerts() {
   }
 
   renderLCD();
+
+  // 6) and 7) need the network and a recovered thermal state. Everything above
+  // has already run — the house is being watched whether or not any of this is
+  // up yet.
+  if (!publicarListo) {
+    static bool once = false;
+    if (!once) {
+      Serial.println(F("[MAIN] Watching already; deferring rules/MQTT until NTP/ICP recovery."));
+      once = true;
+    }
+    return;
+  }
 
   // 6) Rule engine (event triggers -> MQTT publish / webhook)
   evaluateRules();
