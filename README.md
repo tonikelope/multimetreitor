@@ -185,7 +185,7 @@ t = tau * ln((Heq - H) / (Heq - 1))         valid while Heq > 1, that is while I
 
 <div align="justify">
 
-These are `computeICP()` (the integrator, which also arms the bar's zero point), `icpNivelPeligro()` (the bar) and `icpSegundosRestantes()` (the forward solve) in `multimetreitor.ino`.
+These are `computeICP()` (the integrator, which also drives the bar), `icpNivelPeligro()` (the bar) and `icpSegundosRestantes()` (the forward solve) in `multimetreitor.ino`.
 
 </div>
 
@@ -233,57 +233,51 @@ The de-energized cooling constant is `tau2`, used when the breaker draws essenti
 
 <div align="justify">
 
-What you see on the LCD, web panel, MQTT and Rainmeter is the thermal state `H` itself, **rescaled onto the band where the breaker is actually in danger**: empty at a zero point `H0`, full at the trip.
+What you see on the LCD, web panel, MQTT and Rainmeter is the **warning window counted down to the trip**. The model gives the seconds left directly, by solving the thermal image forward at the present current from the heat it has actually integrated:
 
 </div>
 
 ```
-bar = 100 * (H - H0) / (1 - H0)         clamped to 0..100
+t_left = tau * ln( (Heq - H) / (Heq - 1) )      defined while Heq > 1
+bar    = 100 * (1 - t_left / window)            clamped to 0..100
 ```
 
 <div align="justify">
 
-`H0` is not a constant. It is fixed at the instant the modelled time to trip first falls below a configurable **warning window** (120 s by default), which is simply the model solved backwards for that time, and then **frozen** until the bar empties by itself:
+So the bar is empty while the trip is further away than the **warning window** (120 s by default), full at the trip, and linear in between: **half full means half the window left, at any current**. Below `k*In` there is no trip to count down to and it reads zero, which is why an ordinary house never sees a bar however much it draws. That linearity is the whole point — the bar has to be readable at a glance from across the room, when the buzzer is too far away to hear.
+
+The bar may rise instantly, because a warning must never arrive late, but it may only **fall at the bimetal's own cooling rate**. Following the instantaneous estimate downwards is what made an earlier version flash: the time-to-trip estimate has a pole at `I = k*In`, so a load cycling between 30 A and 27 A swung the bar the full 0–100 % every few seconds, ~80 points in a single cycle. Braking the descent keeps the number honest — after a surge the breaker really is still hot — and means that easing the load reads as the breaker cooling down over the following half hour rather than as the indicator vanishing.
+
+It is deliberately **not** the thermal level `H` rescaled. Those two cannot be the same number: a rescaled temperature has to put its zero at or above `1/k²`, the equilibrium of drawing exactly the contracted current, or it would never read empty during ordinary use — and a violent overload crosses that level well inside the window. At 1.6x In a rescaled-temperature bar left zero with 37 s to go instead of the 120 s configured. `icpCarga` remains the raw thermal level and is what the model itself integrates; the bar is the clock built on top of it.
+
+This gives **two staged warnings**. The bar leaving zero is the silent visual one, at the full window. The **warning threshold** is where the buzzer, the LCD banner and the MQTT flag join in — and because the bar is linear in the time left, that threshold reads directly as a margin, with no dependence on the current or on `tau`:
 
 </div>
 
 ```
-H0 = max( Heq - (Heq - 1) * e^(window/tau) ,  1/k² )
+buzzer starts with   window * (1 - threshold/100)   seconds left
 ```
 
 <div align="justify">
 
-The floor `1/k²` is the equilibrium heat of drawing **exactly the contracted current**, 87.3% with the default `k`. Below that the breaker is not in danger by definition, so the bar stays empty throughout ordinary use however much the house draws, and the floor also guarantees the bar can always empty again once the house is back inside its contract. The bar arms on temperature alone whenever `H` is already above that floor, so a house that has been sitting *above* its contract for a while is already showing a bar rather than having one pop out part-full the moment the load steps up.
+40 % of a 120 s window is 72 s. Beeping for the whole window would be unbearable and would throw the quiet stage away. The trigger also requires a load that can still trip the breaker, which is what stops it latching for ever on something like a steady 26 A: that sits at 94 % of the trip level and the breaker sustains it indefinitely, so it is worth showing on the bar but is no emergency. An alert must persist for `ALERT_TRIGGER_SAMPLES = 3` consecutive readings before it latches, which is where the couple of seconds of slippage in the table below comes from.
 
-Freezing `H0` is the whole point of the design. Recompute it every cycle and the bar is tied to the *present* current, and the time-to-trip estimate has a pole at `I = k*In`: the bar then leaps between empty and half full over a couple of amps and disappears entirely on a small dip, which is what an earlier countdown-style bar did. Frozen, the bar just follows `H` up the heating curve and back down the **real cooling curve**, so easing the load reads as the breaker cooling down over a minute or two instead of as the indicator vanishing.
-
-While the bar climbs, it is nonetheless still a pure function of the time left, *independent of the current*:
+Measured from a house idling at 6.35 A, with the defaults and a 40 % threshold:
 
 </div>
 
-```
-bar = (e^(window/tau) - e^(t_left/tau)) / (e^(window/tau) - 1)
-```
+| Overload | Trips in | Bar leaves 0 | Buzzer |
+|:---:|:---:|:---:|:---:|
+| 28 A | 917 s | 120 s before | 70 s before |
+| 30 A | 592 s | 120 s before | 70 s before |
+| 35 A | 325 s | 120 s before | 70 s before |
+| 40 A | 218 s | 120 s before | 70 s before |
+| 50 A | 124 s | 120 s before | 70 s before |
+| 60 A | 81 s | 80 s before | 70 s before |
 
 <div align="justify">
 
-so the **warning threshold**, the bar level at which the alert latches and the buzzer sounds, still reads directly as a margin to react. With the default 120 s window and `tau`:
-
-</div>
-
-| Threshold | Buzzer starts with |
-|:---------:|:------------------:|
-| 10% | about 110 s left |
-| 25% | about 93 s left |
-| 40% | about 76 s left |
-| 50% | about 65 s left |
-| 75% | about 34 s left |
-
-<div align="justify">
-
-This gives **two staged warnings**: the bar leaving zero is the silent visual one, and the threshold is where the buzzer, the LCD banner and the MQTT flag join in. Sounding the buzzer for the whole window would be unbearable and would throw the quiet stage away.
-
-That table holds for the mild, drawn-out overloads where the window is what limits the warning. Past roughly 1.2x the contracted current the floor takes over and the margin is capped by physics instead: at 1.6x In the breaker trips about 117 s after the overload starts, and at 2.4x In in about 40 s from cold, so there is simply no minute of warning left to give. An alert must also persist for `ALERT_TRIGGER_SAMPLES = 3` consecutive readings before it latches, so with the PZEM's averaging of roughly 1.3 s the confirmed warning lands a few seconds after the overload actually begins.
+The threshold holds its promise across the whole range — 10 % gives 106 s, 25 % gives 88 s, 50 % gives 58 s, 75 % gives 28 s. Only past about 2.4x In does physics cap it instead of the setting: the breaker trips in less than the window itself, so there is no two minutes left to give.
 
 </div>
 

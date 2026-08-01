@@ -536,29 +536,21 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
           r.insertCell(-1).textContent = fmtSecs(tripTime(m, k, tau, floor));
         }
       };
-      // Spells out what the threshold means in seconds, so the percentage is
-      // never something the user has to translate in their head.
-      //
-      // While the bar climbs it equals (e^(T/tau) - e^(t/tau)) / (e^(T/tau) - 1),
-      // a function of the time left alone, so the threshold inverts to seconds:
-      //   t = tau * ln(e^(T/tau) - (u/100) * (e^(T/tau) - 1))
-      // Exact for the mild overloads where the window is what limits the
-      // warning; a violent one trips sooner than T and there is less to give.
+      // The bar is the warning window counted down to the trip, linear in the
+      // time left, so the threshold inverts to seconds exactly and with no
+      // dependence on the current or on tau:
+      //   t = window * (1 - threshold/100)
+      // 40 % of 120 s is 72 s left. An earlier version needed an exponential
+      // inverse here because the bar was a rescaled temperature; it was exact
+      // algebra over a model that no longer described what the bar did, and
+      // above ~1.24x In the figure shown was up to 6x the real margin.
       window.refreshAviso = function() {
         var el = document.getElementById('icpAvisoResumen');
         var win = parseFloat(document.getElementById('icpAvisoMax').value);
         var u = parseFloat(document.getElementById('icpUmbralSlider').value);
-        var tau = parseFloat(document.getElementById('icpTau').value);
         if (!el || isNaN(win) || isNaN(u)) return;
         var d = I18N[CURRENT_LANG] || I18N.es;
-        var left;
-        if (isNaN(tau) || tau < 1) {
-          left = Math.round(win * (1 - u / 100));   // tau being edited: linear fallback
-        } else {
-          var e = Math.exp(win / tau);
-          var a = e - (u / 100) * (e - 1);
-          left = Math.round(a > 0 ? tau * Math.log(a) : 0);
-        }
+        var left = Math.round(win * (1 - u / 100));
         if (!(left >= 0)) left = 0;
         el.textContent = d.warnMeans.replace('{s}', left);
       };
@@ -595,7 +587,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       window.wipeEEPROM = function() {
         if(confirm(I18N[CURRENT_LANG].confirmWipe)) {
             document.body.innerHTML = "<div style='margin-top:60px;text-align:center;font-family:sans-serif'><div class='loader'></div><h2>" + I18N[CURRENT_LANG].wipingEeprom + "</h2></div>";
-            fetch('/wipe_eeprom').then(_ => {
+            fetch('/wipe_eeprom', {method:'POST'}).then(_ => {
                 const poll = setInterval(() => {
                     fetch('/json').then(r => {
                         if (r.ok) {
@@ -614,7 +606,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
 
     window.resetDevice = function() {
         document.body.innerHTML = "<div style='margin-top:60px;text-align:center;font-family:sans-serif'><div class='loader'></div><h2>" + I18N[CURRENT_LANG].resettingDevice + "</h2></div>";
-        fetch('/reset').then(_ => {
+        fetch('/reset', {method:'POST'}).then(_ => {
             const poll = setInterval(() => {
                 fetch('/json').then(r => {
                     if (r.ok) {
@@ -958,9 +950,6 @@ enum LcdLang : uint8_t { LANG_ES = 0, LANG_EN = 1 };
 // current there is a measured thermal history, and overriding it with an
 // assumed preload is what used to make the bar ignore that history entirely.
 static const float ICP_SENS_FLOOR_MAX = 0.922f;
-// Upper clamp for the bar's zero point. Keeps 1 - H0 away from zero so the
-// rescaling below cannot divide by ~0 with a short window and a long tau.
-static const float ICP_BAR_H0_MAX = 0.999f;
 #define DEF_CONSUMO_ENABLED false
 #define DEF_CONSUMO_TIPO_A false
 #define DEF_CONSUMO_VAL 0.0f
@@ -1226,13 +1215,13 @@ unsigned long lastIcpMillis = 0;
 bool icpPrimed = false;
 float icpEpisodioIMax = 0.0f;   // peak current of the overload episode in progress
 
-// Thermal level at which the bar starts filling, frozen at the moment the
-// modelled time-to-trip first drops below the warning window. NAN = disarmed,
-// i.e. nothing in sight that can trip the breaker within that window, so the
-// bar reads 0. Deliberately NOT persisted: on boot the thermal state is a
-// guess anyway (see the seeding block in computeICP) and one cycle of the
-// model re-arms it if the overload is still there. See icpNivelPeligro().
-float icpBarraH0 = NAN;
+// The danger bar the user sees, 0-100 % of the warning window counted down to
+// the trip. Held here rather than derived on demand because it carries one bit
+// of history: it may rise instantly but may only fall at the cooling rate (see
+// computeICP). Deliberately NOT persisted — on boot the thermal state is a
+// guess anyway (see the seeding block in computeICP) and one cycle of the model
+// rebuilds it. NAN until the first reading. See icpNivelPeligro().
+float icpBarra = NAN;
 
 time_t ntpEpoch = 0;
 unsigned long ntpSyncMillis = 0;
@@ -1376,7 +1365,8 @@ void loadConfig() {
     size_t cl = strnlen(config.mqttClient, sizeof(config.mqttClient));
     if (bl < 7 || bl > 31) defaults = true;
     if (cl < 3 || cl > 31) defaults = true;
-    if (config.icpNominal < MIN_ICP_NOMINAL_A || config.icpNominal > MAX_ICP_NOMINAL_A) defaults = true;
+    if (isnan(config.icpNominal) ||
+        config.icpNominal < MIN_ICP_NOMINAL_A || config.icpNominal > MAX_ICP_NOMINAL_A) defaults = true;
     if (config.icpUmbral < MIN_ICP_UMBRAL || config.icpUmbral > MAX_ICP_UMBRAL) defaults = true;
     if (config.icpCooldownTime < MIN_ICP_COOLDOWN_S || config.icpCooldownTime > MAX_ICP_COOLDOWN_S) defaults = true;
     if (config.sobretensionEnabled && (config.sobretensionValor < MIN_VOLTAGE_LIMIT || config.sobretensionValor > MAX_VOLTAGE_LIMIT)) defaults = true;
@@ -1819,6 +1809,7 @@ void keepMQTTAlive() {
 
 // ================== ICP RECOVERY (boot) ========
 static void icpLogAppend(uint32_t ts, uint16_t durSec, float iMax, uint8_t nivelMax, uint8_t flags);  // fwd
+float icpSegundosRestantes();  // fwd: computeICP() drives the bar from it
 
 void recoverICP() {
   icpRecuperado = false;
@@ -1996,96 +1987,69 @@ void computeICP() {
   if (icpCarga > 100.0f) icpCarga = 100.0f;
   h = icpCarga / 100.0f;         // re-read: the clamps above may have moved it
 
-  // ---- Bar zero point ---------------------------------------------------
-  // The bar shows this same thermal level, only rescaled so that it stays
-  // empty until the breaker is genuinely in danger: 0 % at icpBarraH0, 100 %
-  // at the trip. H0 is fixed at the instant the modelled time to trip first
-  // falls below the warning window, which is the model solved backwards for
-  // that time:
+  // ---- Danger bar --------------------------------------------------------
+  // The bar answers the one question a glance from across the room has to
+  // answer: HOW LONG UNTIL IT TRIPS. It is the warning window counted down —
+  // 0 % while the trip is further away than icpAvisoMax, 100 % at the trip,
+  // linear in between — so half full really means half the window left, at any
+  // current. Below k*In there is no trip to count down to and it reads 0,
+  // which is why an ordinary house never sees a bar however much it draws.
   //
-  //   H0 = Heq - (Heq - 1) * e^(T/tau)
+  // It rises the instant the estimate says so (a warning must never arrive
+  // late) but it can only FALL at the bimetal's own cooling rate. Following the
+  // instantaneous estimate downwards is what made the old bar flash: a load
+  // cycling between 30 A and 27 A swung it the full 0-100 % every few seconds,
+  // ~80 points in a single cycle, because the time-to-trip estimate has a pole
+  // at I = k*In. Braking the descent keeps it honest — the breaker really is
+  // still hot after the surge — and gives the behaviour asked for: when the
+  // load eases, the bar comes down with the cooling curve instead of vanishing.
   //
-  // and then FROZEN until the bar empties by itself. Recomputing it every
-  // cycle is exactly what made the old bar snap back to zero the moment the
-  // current eased — H0 depends on the present current, so it jumps whenever
-  // the current does. Frozen, the bar just follows the thermal level down the
-  // cooling curve, which is what a temperature reading is supposed to do.
-  //
-  // Floored at 1/k^2, the equilibrium of drawing precisely the contracted
-  // current: below that the breaker is not in danger by definition, so the
-  // bar must read empty. It also guarantees the bar can always empty again —
-  // a violent overload would otherwise park H0 under the level a perfectly
-  // normal load sustains, leaving the bar stuck part-full for ever.
-  float tauLoad = (float)config.icpTau;
-  if (tauLoad < 1.0f) tauLoad = 1.0f;
-  if (isnan(icpBarraH0)) {
-    float hmin = 1.0f / (k * k);
-    float h0 = NAN;
-    if (heq > 1.0f) {                    // anything below this never trips
-      float win = (float)config.icpAvisoMax;
-      if (win < 1.0f) win = 1.0f;
-      // Time left at the REAL integrated level. No sensitivity floor here: it
-      // would arm the bar while the modelled bimetal is still cold, leaving it
-      // pinned at 0 % with the alert already raised.
-      float left = tauLoad * logf((heq - h) / (heq - 1.0f));
-      if (!(left > win)) {               // NaN-safe: arms on NaN, never late
-        h0 = heq - (heq - 1.0f) * expf(win / tauLoad);
-        if (h0 < hmin) h0 = hmin;
-      }
-    }
-    // Second way in: already hotter than the contracted current sustains, no
-    // matter what the present load is doing. Without this the bar could appear
-    // part-full — a house sitting at 26 A holds 94 % of the trip level while
-    // never actually tripping, and stepping up to 32 A would pop the bar
-    // straight to 57 %. Arming on temperature alone means that house is
-    // already showing a bar, so the step up just continues the climb.
-    if (isnan(h0) && h > hmin) h0 = hmin;
-    if (!isnan(h0)) {
-      if (h0 > ICP_BAR_H0_MAX) h0 = ICP_BAR_H0_MAX;
-      icpBarraH0 = h0;
-    }
-  } else if (h <= icpBarraH0 && heq <= h) {
-    // Both conditions on purpose: emptied on its own AND cooling rather than
-    // still climbing into the band. A violent overload arms with H0 above the
-    // present level (the floor), and testing only h <= H0 would disarm it on
-    // the very next cycle, before the bar ever showed anything.
-    icpBarraH0 = NAN;
+  // Note this is NOT the thermal level rescaled. Those two cannot be the same
+  // number: keeping the bar empty during ordinary use would force its zero
+  // point up to the contracted-current equilibrium, which a violent overload
+  // crosses well inside the window (at 1.6x In that costs 83 of the 120 s).
+  // icpCarga stays available as the raw thermal level for the model itself.
+  float left = icpSegundosRestantes();
+  float win = (float)config.icpAvisoMax;
+  if (win < 1.0f) win = 1.0f;
+  float objetivo = (left < 0.0f) ? 0.0f : 100.0f * (1.0f - left / win);
+  if (isnan(objetivo) || objetivo < 0.0f) objetivo = 0.0f;
+  if (objetivo > 100.0f) objetivo = 100.0f;
+  if (isnan(icpBarra) || objetivo >= icpBarra) {
+    icpBarra = objetivo;                 // never late on the way up
+  } else {
+    icpBarra = objetivo + (icpBarra - objetivo) * expf(-dt / tau);
+    if (icpBarra < 0.5f) icpBarra = 0.0f;   // settle instead of crawling to zero
   }
 }
 
-// What the user sees (LCD, web, MQTT, Rainmeter, rule engine): heat accumulated
-// towards the trip, 0-100 %, where 100 % is the trip itself.
+// What the user sees (LCD, web, MQTT, Rainmeter, rule engine): the warning
+// window counted down to the trip, 0-100 %. Computed in computeICP() because
+// the descent is rate-limited and therefore needs dt; this is just the getter.
 //
-float icpSegundosRestantes();  // fwd
-
-// The bar IS the thermal level, rescaled onto the band that matters: 0 % at
-// icpBarraH0 (see computeICP, where it is armed and frozen) and 100 % at the
-// trip. So it reads as a temperature — it rises while the breaker heats and
-// falls along the real cooling curve when the load eases — while still being
-// empty during ordinary use, because H0 never sits below the equilibrium of
-// the contracted current.
+// Zero means one of two things, and both are "nothing to do": either no load in
+// sight can trip the breaker, or the trip is further away than the warning
+// window. Full means it trips now. Half full means half the window left — at
+// any current, which is the property that makes it readable at a glance.
 //
-// Zero means one of two things, and both are "nothing to do": either no load
-// in sight can trip the breaker, or the trip is further away than the warning
-// window. Full means it trips now.
-//
-// A previous version showed the countdown itself (percentage of the window
-// used up). It had the right units but the wrong behaviour: the time estimate
-// has a pole at I = k*In, so the bar leapt between 0 % and half full over a
-// couple of amps, vanished entirely on a small dip, and — because the
-// sensitivity floor overrode the integrated heat — carried no thermal memory
-// at all. Rescaling the temperature keeps the useful property (during the
-// climb the bar is still a pure function of the time left, so a 50 % threshold
-// really is about half the window) and drops the jumps.
+// It is deliberately NOT the thermal level (icpCarga) rescaled. A rescaled
+// temperature has to put its zero at or above the contracted-current
+// equilibrium to stay empty during ordinary use, and a violent overload crosses
+// that level well inside the window: at 1.6x In the bar would leave 0 % with
+// 37 s left instead of the 120 s configured. The clock does not have that
+// ceiling. The cost is that the bar depends on the present current, which is
+// why the descent is braked — see the comment in computeICP.
 float icpNivelPeligro() {
-  if (isnan(icpCarga)) return NAN;
-  if (isnan(icpBarraH0)) return 0.0f;      // disarmed: no trip within the window
-  float span = 1.0f - icpBarraH0;
-  if (span < 1.0f - ICP_BAR_H0_MAX) span = 1.0f - ICP_BAR_H0_MAX;
-  float nivel = 100.0f * (icpCarga / 100.0f - icpBarraH0) / span;
-  if (nivel < 0.0f) return 0.0f;           // armed but not yet inside the band
-  if (nivel > 100.0f) return 100.0f;
-  return nivel;
+  // Nothing has been measured yet (the whole of setup() — WiFi, NTP, MQTT and
+  // the retained-state wait — runs before the first sensor read, up to ~75 s
+  // after a power cut). Returning 0 there would publish "no danger" over
+  // /json, MQTT and Rainmeter with a fresh timestamp, which is a claim the
+  // device cannot make yet. NAN means "unknown" and every consumer already
+  // renders it as an error rather than as a safe reading.
+  if (!icpPrimed || isnan(icpCarga) || isnan(icpBarra)) return NAN;
+  if (icpBarra < 0.0f) return 0.0f;
+  if (icpBarra > 100.0f) return 100.0f;
+  return icpBarra;
 }
 
 // Appends one episode to the forensic ring buffer. Not saved to EEPROM here:
@@ -2127,8 +2091,19 @@ void icpLogUpdate() {
                                    // that kills the device is still attributable
                                    // to a current when it comes back
 
-  if (isnan(current) || config.icpNominal <= 0) return;   // stale/invalid reading
-  bool above = (current / config.icpNominal) > ICP_NEVER_TRIP_MULT;
+  if (isnan(current) || isnan(config.icpNominal) || config.icpNominal <= 0) return;
+
+  // Record from whichever comes first: the conventional non-tripping current
+  // (1.13x In, the standard's definition of "cannot trip") or the model's own
+  // asymptote k*In, past which it does trip. With the default k = 1.07 the
+  // fixed 1.13 alone left a blind band from 26.75 A to 28.25 A in which the bar
+  // can reach 100 % and the buzzer sound without a single line being logged —
+  // losing precisely the episodes worth studying.
+  float kLog = config.icpK;
+  if (isnan(kLog) || kLog < MIN_ICP_K) kLog = MIN_ICP_K;
+  if (kLog > MAX_ICP_K) kLog = MAX_ICP_K;
+  float logMult = (kLog < ICP_NEVER_TRIP_MULT) ? kLog : ICP_NEVER_TRIP_MULT;
+  bool above = (current / config.icpNominal) > logMult;
 
   if (above) {
     belowCount = 0;
@@ -2149,7 +2124,14 @@ void icpLogUpdate() {
   if (!active) return;
   if (++belowCount < ICP_LOG_GRACE_SAMPLES) return;   // brief dip, same episode
 
-  unsigned long durMs = millis() - startMs - (unsigned long)belowCount * config.refreshInterval;
+  // The grace samples were counted at whatever refresh interval was in force at
+  // the time, and that interval can be edited mid-episode. Subtracting the new
+  // one unsigned would wrap to ~4.29e9 ms and record an 18 h episode (the
+  // 65535 s saturation below) for one that lasted seconds, poisoning exactly
+  // the data used to pin down the real trip curve. Saturate at zero instead.
+  unsigned long elapsedMs = millis() - startMs;
+  unsigned long graceMs   = (unsigned long)belowCount * config.refreshInterval;
+  unsigned long durMs = (elapsedMs > graceMs) ? (elapsedMs - graceMs) : 0;
   unsigned long durS = durMs / 1000UL;
   icpLogAppend(startTs, durS > 65535 ? 65535 : (uint16_t)durS, iMax, nivelMax, 0);
   active = false;
@@ -2391,28 +2373,40 @@ AlertState evaluateAlerts() {
   // the MQTT flag join in. Beeping for the whole window would be unbearable and
   // would throw away the quiet stage.
   //
-  // Because the bar is a pure function of the time left while it climbs, the
-  // threshold still reads as a margin: 50 % of a 120 s window is roughly a
-  // minute of warning. Only roughly, though — past about 1.2x the contracted
-  // current the window is capped by the physics (at 2.4x the breaker trips in
-  // 40 s from cold, so there is no minute to give).
+  // The bar is the warning window counted down, so the threshold IS a margin in
+  // seconds and reads exactly: t = window * (1 - threshold/100). With the
+  // defaults, 40 % of a 120 s window means the buzzer starts with 72 s left, at
+  // any current. That is the whole reason the bar is a clock and not a rescaled
+  // temperature — the setting says what it does.
   //
   // A level of 0 means either that this load cannot trip the breaker at all or
   // that the trip is further out than the window, so a steady legitimate load can
   // never raise an alarm. Hysteresis with a positive floor keeps the buzzer from
   // chattering around the threshold (with icpUmbral at its minimum, an absolute
   // margin would make the clear condition unreachable).
+  //
+  // The trigger also requires a load that can actually trip the breaker. The bar
+  // may still be draining down its cooling curve after an overload eases, and
+  // that is worth SHOWING but is not an emergency: at a steady 26 A the bimetal
+  // sits at ~94 % of the trip level for ever, a load the breaker holds
+  // indefinitely. Without this test the buzzer would latch permanently on it.
+  //
+  // Validity now includes the sensor: computeICP() freezes the model on a bad
+  // reading, so without this a dead PZEM during an overload would keep the
+  // buzzer latched for ever on a level that can no longer change.
   static bool icpLatch = false;
   static uint8_t icpCount = 0;
   float icpNivel = icpNivelPeligro();
   if (isnan(icpNivel)) icpNivel = 0.0f;
   float icpClearAt = (float)config.icpUmbral - ALERT_HYST_ICP_PCT;
   if (icpClearAt < 1.0f) icpClearAt = 1.0f;
+  float icpLeft = icpSegundosRestantes();          // < 0 when the load cannot trip
+  bool icpCanTrip = (icpLeft >= 0.0f);
 
   updateAlertLatch(icpLatch, icpCount,
-                   config.icpEnabled,
-                   icpNivel >= (float)config.icpUmbral,
-                   icpNivel < icpClearAt);
+                   config.icpEnabled && !isnan(current) && !isnan(voltage),
+                   icpNivel >= (float)config.icpUmbral && icpCanTrip,
+                   icpNivel < icpClearAt || !icpCanTrip);
   st.icp     = icpLatch;
   st.sobre   = sobreLatch;
   st.sub     = subLatch;
@@ -2424,14 +2418,18 @@ AlertState evaluateAlerts() {
     snprintf(st.msg, sizeof(st.msg), "%s", ALERT_MSG_ICP[config.lcdLang]);
     // Second LCD line during an ICP warning: the margin left to switch
     // something off is the actionable number, so it replaces the percentage
-    // when the model can estimate it.
-    float icpLeft = icpSegundosRestantes();
+    // when the model can estimate it. Reuses the value computed above rather
+    // than solving the model twice per cycle.
+    // No wording: it was the only alert text hardcoded in Spanish (the LCD is
+    // bilingual everywhere else), and "27A quedan 12m06s" is 17 chars, one over
+    // the 16-column display, so the trailing 's' was being cut off. The line
+    // above already says what this is a warning about.
     if (icpLeft >= 0.0f) {
       if (icpLeft >= 60.0f)
-        snprintf(st.value, sizeof(st.value), "%.0fA quedan %dm%02ds",
+        snprintf(st.value, sizeof(st.value), "%.0fA %dm%02ds",
                  current, (int)(icpLeft / 60), (int)icpLeft % 60);
       else
-        snprintf(st.value, sizeof(st.value), "%.1fA quedan %ds", current, (int)icpLeft);
+        snprintf(st.value, sizeof(st.value), "%.1fA %ds", current, (int)icpLeft);
     } else {
       snprintf(st.value, sizeof(st.value), "%.2fA %.0f%%", current, icpNivel);
     }
@@ -2833,6 +2831,13 @@ void handleConfigForm();  // fwd
 void handleConfigPost() {
   String oldBroker = String(config.mqttBroker);
   String oldClient = String(config.mqttClient);
+  // Snapshot of everything the thermal model is measured against, so the state
+  // it has integrated so far can be carried across a settings change instead of
+  // being silently reinterpreted (see the rescale below).
+  float oldNominal = config.icpNominal;
+  float oldK       = config.icpK;
+  int   oldTau     = config.icpTau;
+  int   oldAviso   = config.icpAvisoMax;
 
   if (server.hasArg("mqtt_broker")) {
     String newBroker = server.arg("mqtt_broker");
@@ -2852,7 +2857,13 @@ void handleConfigPost() {
   config.icpEnabled = server.hasArg("icpEnabled");
 
   if (server.hasArg("icpNominal")) {
+    // toFloat() is atof(), which accepts "nan"/"inf". Both clamps below are
+    // false for NaN, so without this guard the value would be stored, survive
+    // loadConfig() (whose range test is equally NaN-blind) and permanently
+    // disable the ICP model: every mult/heq becomes 0, the bar never arms and
+    // the forensic log stops recording. icpK already had this guard.
     float icpNom = server.arg("icpNominal").toFloat();
+    if (isnan(icpNom)) icpNom = DEF_ICP_NOMINAL;
     if (icpNom < MIN_ICP_NOMINAL_A) icpNom = MIN_ICP_NOMINAL_A;
     if (icpNom > MAX_ICP_NOMINAL_A) icpNom = MAX_ICP_NOMINAL_A;
     config.icpNominal = icpNom;
@@ -2894,11 +2905,37 @@ void handleConfigPost() {
     config.icpCooldownTime = cool;
   }
 
-  // The bar's zero point was frozen against the previous nominal/window/k, so
-  // it no longer means anything once those change. Dropping it re-arms the bar
-  // from the next cycle with the new settings; the thermal level itself is a
-  // measurement and stays untouched.
-  icpBarraH0 = NAN;
+  // icpCarga is a percentage of THIS breaker's trip point, so nominal and k
+  // define the scale it is measured on. Changing them without rescaling
+  // reinterprets the same accumulated heat against a different trip point:
+  // raising the nominal fired a ~55 s false alarm (a 40 A breaker at 28 A is
+  // in no danger whatsoever), and lowering it left the model ~12 min behind on
+  // a breaker that was already hot — the dangerous direction. The bimetal's
+  // physical temperature is unchanged by the edit and scales with the square of
+  // the trip current, so the normalised level scales with its inverse.
+  if (!isnan(icpCarga) && (config.icpNominal != oldNominal || config.icpK != oldK)) {
+    float tripOld = oldK * oldNominal;
+    float tripNew = config.icpK * config.icpNominal;
+    if (tripOld > 0.0f && tripNew > 0.0f) {
+      float rescaled = icpCarga * (tripOld * tripOld) / (tripNew * tripNew);
+      if (isnan(rescaled) || rescaled < 0.0f) rescaled = 0.0f;
+      if (rescaled > 100.0f) rescaled = 100.0f;
+      icpCarga = rescaled;
+    }
+  }
+
+  // The bar carries a braked descent, so it holds a value computed against the
+  // previous settings. Once those change it means nothing; dropping it lets the
+  // next cycle rebuild it, and since the bar may always rise instantly this can
+  // only make a warning earlier, never later.
+  //
+  // Conditional on purpose. An unconditional reset here would fire on every
+  // save — muting the buzzer from the web during an overload would silently
+  // recompute the bar mid-episode.
+  if (config.icpNominal != oldNominal || config.icpK != oldK ||
+      config.icpTau != oldTau || config.icpAvisoMax != oldAviso) {
+    icpBarra = NAN;
+  }
 
   uint8_t mask = 0;
   if (server.hasArg("lcd_v")) mask |= (1 << LCD_VOLT);
@@ -3282,9 +3319,14 @@ void handleJsonIcpLog() {
   server.setContentLength(CONTENT_LENGTH_UNKNOWN);
   server.send(200, "application/json; charset=utf-8", "");
 
+  // Mirror the threshold icpLogUpdate() actually uses: min(k, 1.13) * In.
+  float kLog = config.icpK;
+  if (isnan(kLog) || kLog < MIN_ICP_K) kLog = MIN_ICP_K;
+  if (kLog > MAX_ICP_K) kLog = MAX_ICP_K;
+  float logMult = (kLog < ICP_NEVER_TRIP_MULT) ? kLog : ICP_NEVER_TRIP_MULT;
   snprintf(buf, sizeof(buf),
            "{\"nominal\":%.2f,\"umbral_registro_a\":%.2f,\"eventos\":[",
-           (double)config.icpNominal, (double)(ICP_NEVER_TRIP_MULT * config.icpNominal));
+           (double)config.icpNominal, (double)(logMult * config.icpNominal));
   server.sendContent(buf);
 
   // Walk the ring backwards from the most recent slot.
@@ -3526,8 +3568,12 @@ void setupWeb() {
   server.on("/json_rules", handleJsonRules);
   server.on("/save_rules", HTTP_POST, handleSaveRules);
   server.on("/rule_test", HTTP_POST, handleRuleTest);
-  server.on("/wipe_eeprom", handleWipeEEPROM);
-  server.on("/reset", handleReset);
+  // POST-only on purpose: both are destructive and neither is authenticated, so
+  // as GETs any page loaded in a browser on this LAN could fire them with a
+  // bare <img src="http://.../wipe_eeprom">. A cross-origin POST cannot be sent
+  // silently the same way. Same reasoning as rulesContentTypeOk().
+  server.on("/wipe_eeprom", HTTP_POST, handleWipeEEPROM);
+  server.on("/reset", HTTP_POST, handleReset);
 
   server.on("/mqtt_status", []() {
     char out[24];
