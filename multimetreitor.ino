@@ -895,6 +895,9 @@ IPAddress dns(192, 168, 1, 1);
 #define ICP_NEVER_TRIP_MULT 1.13f
 #define NTP_WAIT_TIMEOUT_MS 30000
 #define NTP_RESYNC_INTERVAL_MS 86400000UL
+// If NTP never synced at boot (timestamp stuck at -1), retry this often instead of
+// waiting a full resync interval, so the clock self-heals within a minute or two.
+#define NTP_RETRY_AFTER_FAIL_MS 60000UL
 
 // ================== BUZZER ======================
 #define BUZZER_PIN D7
@@ -1608,7 +1611,8 @@ void setupTime() {
   while (!ntpOK) {
     handleOTA();
     server.handleClient();  // keep the web UI responsive during the NTP wait
-    readSensorsAndTriggerAlerts();
+    mqttClient.loop();      // MQTT is connected before NTP now (see setup): keep it alive
+    readSensorsAndTriggerAlerts();  // keep watching the mains during the wait
     yield();
     time_t now = time(nullptr);
     if (now > 1609459200) {  // >= 2021-01-01, valid time
@@ -1636,6 +1640,7 @@ void setupTime() {
     while (millis() - t0 < 50) {
       handleOTA();
       server.handleClient();
+      mqttClient.loop();
       readSensorsAndTriggerAlerts();
       yield();
     }
@@ -1652,7 +1657,12 @@ void setupTime() {
 }
 
 void keepSyncNTP() {
-  if (millis() - lastNTPSync > NTP_RESYNC_INTERVAL_MS) {
+  // Daily re-sync, OR a fast retry when NTP never synced at boot: on a boot timeout
+  // ntpOK is forced true (to end the wait) with ntpEpoch = -1, so without a shorter
+  // retry the clock would stay invalid until the 24 h resync. Retry every
+  // NTP_RETRY_AFTER_FAIL_MS until a valid time arrives.
+  unsigned long resyncEvery = (ntpEpoch == -1) ? NTP_RETRY_AFTER_FAIL_MS : NTP_RESYNC_INTERVAL_MS;
+  if (millis() - lastNTPSync > resyncEvery) {
     Serial.println(F("[NTP] Forcing re-sync."));
     // Re-sync keeping local timezone
     configTime(TZ_INFO, NTP_SERVER);
@@ -1911,7 +1921,11 @@ void recoverICP() {
     // seconds ago is the signature of a trip (or of a mains cut with the house
     // loaded) — exactly the event that would pin down the real curve, so it is
     // recorded rather than lost. Flagged as probable, never as certain.
-    if (icpCarga >= 50.0f && secs > 0 && secs <= 180) {
+    // Test the RECOVERED retained value, not icpCarga: since cfc6931, computeICP() has
+    // already seeded icpCarga from the CURRENT boot load (~50 % at just ~19 A), which
+    // would mark an ordinary under-load reboot as a probable trip and corrupt the
+    // forensic calibration log. The trip signature is a hot RETAINED state == `adjusted`.
+    if (adjusted >= 50.0f && secs > 0 && secs <= 180) {
       icpLogAppend((uint32_t)tsRecibidoMQTT, (uint16_t)secs, iRecibidoMQTT,
                    (uint8_t)(icpRecibidoMQTT + 0.5f), ICP_EV_TRIPPED);
       logMessage(String(F("[ICP-LOG] Probable trip recorded: ")) + String(iRecibidoMQTT, 2) +
@@ -3785,8 +3799,13 @@ void setup() {
   setupWiFi();
   setupOTA();
   setupWeb();  // before the (possibly long) NTP/MQTT/ICP waits, which pump handleClient()
-  setupTime();
+  // MQTT before NTP: the NTP wait can block up to NTP_WAIT_TIMEOUT_MS, and gating the
+  // broker connection behind it made the queue take that long to come up whenever NTP
+  // was slow or timed out at boot. MQTT needs no clock, so connect it first; setupTime()
+  // then keeps it alive (mqttClient.loop()) during its wait, and recoverICP() still runs
+  // last, with a live broker and — if it arrived — the clock.
   setupMQTT();
+  setupTime();
   recoverICP();
   logMessage(F("[SETUP] Ready. Entering loop."));
 }
