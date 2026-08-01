@@ -1030,6 +1030,12 @@ enum RuleEval : uint8_t { RE_FALSE = 0, RE_TRUE = 1, RE_UNKNOWN = 2 };
 #define RULE_FLAG_POST   0x02  // webhook uses POST (else GET)
 
 static const uint8_t RULE_MIN_SAMPLES = 1, RULE_MAX_SAMPLES = 20, RULE_DEF_SAMPLES = 3;
+// Cap on how many evaluate cycles an in-progress edge may stay only PARTIALLY
+// delivered (typically an MQTT action whose broker is down): after this many the
+// stale pending bits are abandoned so the rule resumes edge detection instead of
+// freezing latched. One cycle ~= one refreshInterval; transient webhook-budget or
+// WiFi blips recover well within this, so normal delivery semantics are untouched.
+static const uint8_t RULE_PENDING_MAX_CYCLES = 30;
 static const float   RULE_EQ_EPSILON = 0.05f;   // absolute floor for the '==' operator
 static const float   RULE_EQ_REL     = 0.005f;  // + 0.5% relative, so '==' scales with the metric
 static const int     WEBHOOK_TIMEOUT_MS = 3000; // per webhook request (blocks only on a rule edge)
@@ -1163,6 +1169,16 @@ struct AppConfig {
 static_assert(sizeof(AppConfig) <= 4096, "AppConfig exceeds one EEPROM sector (4096 B)");
 static_assert(offsetof(AppConfig, lcdLang) == 340, "AppConfig layout drifted before rules; bump CONFIG_VERSION");
 static_assert(offsetof(AppConfig, rules) == 344, "rules[] offset moved; EEPROM migration is unsafe");
+// The guards above pin everything UP TO rules[]. These two pin the SIZE of the
+// rules block and the whole appended tail: editing MAX_RULES / MAX_CONDS /
+// MAX_ACTIONS or any char[] inside Rule/RuleActionDef would shift rulesMagic and
+// every block appended after it (ICP model, forensic log, sensitivity). On the
+// next boot of a DEPLOYED unit those magics would then read from the wrong offset
+// and silently reset the ICP calibration + forensic log. Fail the BUILD instead.
+// (Ground-truth offsets from the xtensa target compiler; change only with a
+// deliberate, migration-aware layout edit.)
+static_assert(offsetof(AppConfig, rulesMagic) == 3344, "rules[] block size drifted; appended blocks would shift and reset on deployed units");
+static_assert(offsetof(AppConfig, icpSensMagic) == 3512, "AppConfig tail drifted; appended magic-guarded blocks would misread on deployed units");
 
 // ================== LCD TEXT & ALERTS ==========
 struct LCDLines {
@@ -1209,6 +1225,9 @@ uint8_t ruleSampleCount[MAX_RULES] = { 0 };
 // The latch flips at edge-commit; these drive per-action delivery/retry after.
 uint8_t ruleActPending[MAX_RULES] = { 0 };
 bool ruleActClearEdge[MAX_RULES] = { false };
+// Cycles the current edge has stayed only partially delivered; bounds the
+// broker-down freeze (see RULE_PENDING_MAX_CYCLES).
+uint8_t rulePendingAge[MAX_RULES] = { 0 };
 
 float icpCarga = 0.0f;
 unsigned long lastIcpMillis = 0;
@@ -2701,6 +2720,10 @@ static void serviceRulePending(uint8_t i, Rule &r, uint8_t &webhookBudget) {
     const char* payload = clearEdge ? act.clear : act.fire;
     if (act.target[0] == '\0') { ruleActPending[i] &= ~bit; continue; }  // nothing to do
     if (act.type == RA_MQTT) {
+      // An empty payload published RETAINED deletes the topic's retained value.
+      // An activate action with an empty fire + retain would otherwise wipe the
+      // topic, so skip it (an empty non-retained message is harmless and allowed).
+      if (payload[0] == '\0' && (act.flags & RULE_FLAG_RETAIN)) { ruleActPending[i] &= ~bit; continue; }
       if (mqttClient.connected() &&
           mqttClient.publish(act.target, payload, (bool)(act.flags & RULE_FLAG_RETAIN))) {
         ruleActPending[i] &= ~bit;  // delivered
@@ -2753,11 +2776,23 @@ void evaluateRules() {
     uint8_t i = (uint8_t)((startIdx + n) % MAX_RULES);
     Rule &r = config.rules[i];
     if (!r.enabled || r.condCount == 0 || r.actCount == 0) {
-      ruleLatch[i] = false; ruleSampleCount[i] = 0; ruleActPending[i] = 0; continue;
+      ruleLatch[i] = false; ruleSampleCount[i] = 0; ruleActPending[i] = 0; rulePendingAge[i] = 0; continue;
     }
 
-    // Finish delivering an in-progress edge before evaluating a new one.
-    if (ruleActPending[i]) { serviceRulePending(i, r, webhookBudget); continue; }
+    // Finish delivering an in-progress edge before evaluating a new one — but do
+    // not let an undeliverable MQTT action (broker down) freeze edge detection
+    // forever. Retry for up to RULE_PENDING_MAX_CYCLES; after that, abandon the
+    // stale pending bits so the rule tracks the current state again next pass.
+    if (ruleActPending[i]) {
+      serviceRulePending(i, r, webhookBudget);
+      if (ruleActPending[i] && rulePendingAge[i] < RULE_PENDING_MAX_CYCLES) { rulePendingAge[i]++; continue; }
+      if (ruleActPending[i]) {                          // still stuck past the cap
+        ruleActPending[i] = 0;                           // abandon the undeliverable edge
+        logMessage(F("[RULE] pending action abandoned (broker unreachable?)"));
+      }
+      rulePendingAge[i] = 0;
+      continue;                                          // one edge per cycle; re-evaluate next pass
+    }
 
     RuleEval ev = evalRulePredicate(r);
     if (ev == RE_UNKNOWN) continue;  // hold latch AND counter on undetermined state
@@ -2770,6 +2805,7 @@ void evaluateRules() {
         // Commit ACTIVATE edge: latch on, every action pending.
         ruleLatch[i] = true; ruleSampleCount[i] = 0; ruleActClearEdge[i] = false;
         ruleActPending[i] = (uint8_t)((1 << r.actCount) - 1);
+        rulePendingAge[i] = 0;
         logRuleEdge(r, false);
         serviceRulePending(i, r, webhookBudget);
       }
@@ -2783,6 +2819,7 @@ void evaluateRules() {
         for (uint8_t a = 0; a < r.actCount && a < MAX_ACTIONS; a++)
           if (r.acts[a].clear[0] != '\0') mask |= (uint8_t)(1 << a);
         ruleActPending[i] = mask;
+        rulePendingAge[i] = 0;
         if (mask) { logRuleEdge(r, true); serviceRulePending(i, r, webhookBudget); }
       }
     }
@@ -3471,26 +3508,33 @@ void handleSaveRules() {
   // definition actually changed, so editing one rule cannot swallow another
   // rule's pending activate/clear.
   uint8_t i = 0;
+  bool changed = false;
   for (JsonObject o : doc.as<JsonArray>()) {
     if (i >= MAX_RULES) break;
     Rule nr;
     parseRuleFromJson(o, nr);
     if (!rulesEqual(config.rules[i], nr)) {
-      ruleLatch[i] = false; ruleSampleCount[i] = 0; ruleActPending[i] = 0;
+      ruleLatch[i] = false; ruleSampleCount[i] = 0; ruleActPending[i] = 0; rulePendingAge[i] = 0;
+      config.rules[i] = nr;
+      changed = true;
     }
-    config.rules[i] = nr;
     i++;
   }
   // Zero any remaining slots, resetting their runtime state if they had content.
   for (; i < MAX_RULES; i++) {
     Rule &r = config.rules[i];
     if (r.enabled || r.condCount || r.actCount) {
-      ruleLatch[i] = false; ruleSampleCount[i] = 0; ruleActPending[i] = 0;
+      ruleLatch[i] = false; ruleSampleCount[i] = 0; ruleActPending[i] = 0; rulePendingAge[i] = 0;
+      memset(&r, 0, sizeof(Rule));
+      changed = true;
     }
-    memset(&r, 0, sizeof(Rule));
   }
+  // Dirty-check: only burn a full-sector EEPROM write (the blob also holds the
+  // 24-month energy history) when the table actually changed. An identical
+  // re-save is then a no-op, and a power loss can only ever corrupt the blob
+  // during a write that was carrying a real change.
   config.rulesMagic = RULES_MAGIC;
-  saveConfig();
+  if (changed) saveConfig();
   server.send(200, "application/json", "{\"ok\":true}");
 }
 
@@ -3513,8 +3557,10 @@ void handleRuleTest() {
     if (a) out += ",";
     RuleActionDef &act = r.acts[a];
     const char* payload = fire ? act.fire : act.clear;
-    // Skip empty target, and an empty clear payload (would wipe a retained topic).
-    if (act.target[0] == '\0' || (!fire && act.clear[0] == '\0')) { out += "{\"skipped\":true}"; continue; }
+    // Skip an empty target, an empty clear payload, or an empty RETAINED payload
+    // on either edge — publishing empty+retained would wipe the topic's value.
+    bool emptyRetained = (payload[0] == '\0' && act.type == RA_MQTT && (act.flags & RULE_FLAG_RETAIN));
+    if (act.target[0] == '\0' || (!fire && act.clear[0] == '\0') || emptyRetained) { out += "{\"skipped\":true}"; continue; }
     char buf[64];
     if (act.type == RA_MQTT) {
       bool ok = mqttClient.connected() && mqttClient.publish(act.target, payload, (bool)(act.flags & RULE_FLAG_RETAIN));
