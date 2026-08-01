@@ -71,7 +71,7 @@ It ships with a **web configuration panel** served by the device itself and a **
 
 - **Config / EEPROM**: `struct AppConfig` serialized to EEPROM with validation and default values.
 - **WiFi / OTA / NTP**: connection with retries, OTA and time sync via a POSIX TZ string.
-- **MQTT**: publishes state, log and status, and recovers the ICP state at boot (it reads the *retained* message from its own topic).
+- **MQTT**: publishes state, log and status, and recovers the ICP state at boot (it reads the *retained* message from its own topic). The ICP protection itself does not depend on any of this — see [Persistence](#persistence).
 - **ICP model** (`computeICP`): integrates the breaker's thermal state from the I/In ratio with a first-order thermal-image model (IEC 60255-149). See [ICP thermal model](#-icp-thermal-model).
 - **Alerts** (`evaluateAlerts`): evaluated in priority order, highest first: ICP, then overvoltage, then undervoltage, then consumption.
 - **Rules engine** (`evaluateRules`): user-defined triggers stored in EEPROM and evaluated every cycle. Each rule fires an MQTT publish or a webhook on the activate and clear edges. See [Rules / Triggers](#-rules--triggers).
@@ -292,6 +292,10 @@ The threshold holds its promise across the whole range — 10 % gives 106 s, 25 
 <div align="justify">
 
 The thermal state survives a reboot. `computeICP()` publishes `H` (with a timestamp) to a *retained* MQTT topic, and at boot the device reads it back, applies the elapsed cooling and resumes, so a breaker that was hot before a brief power blip is not treated as cold. Real overload episodes (and probable trips) are also written to a small on-device forensic ring buffer and published over MQTT.
+
+That recovery needs the network, and the case where it matters most is the one that does not have it: after a general power cut the router is booting too, so there is no MQTT to read the retained state from and no NTP to measure the elapsed time with. **Measuring, modelling and warning therefore do not wait for any of it.** The PZEM read, the thermal model, the forensic log, the alert latches, the buzzer and the LCD all run from the first loop of `setup()`, and every blocking wait in the boot sequence keeps them running — WiFi (up to 2x20 s), NTP (30 s), MQTT (~5 s) and the retained-state wait (3 s) add up to a worst case of about 75 s, which is exactly the minute you switch the whole house back on at once. Only the rule engine (which fires webhooks) and the MQTT publish wait for the network.
+
+Recovering the retained value and measuring are complementary rather than alternatives: the retained value knows about heat accumulated **before** the reboot, when there was no current to infer it from, and the running model knows what has happened **since**. The device keeps the higher of the two, which errs towards warning early, and none of the bail-out paths discards the measured state any more.
 
 </div>
 
