@@ -1156,6 +1156,8 @@ static const float MAX_CONSUMO_VAL = 10000.0f;
 #define DEF_ICP_LOG_MIN_NIVEL 1
 #define DEF_ICP_LOG_MIN_AMP   30.0f
 #define ICP_LOG_CFG_MAGIC     0x4B   // marks the configurable log thresholds
+#define ENERGY_DAY_MAGIC      0x3C   // marks the daily-energy tracking state
+#define ENERGY_DAILY_FILE     "/energy_d.bin"   // LittleFS: one record per completed day
 static const int   MIN_ICP_LOG_NIVEL = 0,  MAX_ICP_LOG_NIVEL = 100;
 static const float MIN_ICP_LOG_AMP   = 0.0f, MAX_ICP_LOG_AMP  = 100.0f;
 
@@ -1325,6 +1327,12 @@ struct AppConfig {
   float   icpLogMinAmp;     // OR peak current (A) to record an episode regardless of nivel
   uint8_t icpLogMinNivel;   // danger level (%) that records an episode
   uint8_t icpLogCfgMagic;
+
+  // Daily-energy tracking state (the per-day totals live in a LittleFS file; this
+  // is just the running anchor). Magic-guarded like the blocks above.
+  float   dayStartEnergy;   // cumulative kWh at the start of the current day
+  uint8_t currentDay;       // day-of-month of the current day (0 = uninitialised)
+  uint8_t energyDayMagic;
 };
 
 // Layout guards: the append-without-version-bump migration is only safe while
@@ -1504,6 +1512,9 @@ void setDefaults() {
   config.icpLogMinAmp = DEF_ICP_LOG_MIN_AMP;
   config.icpLogMinNivel = DEF_ICP_LOG_MIN_NIVEL;
   config.icpLogCfgMagic = ICP_LOG_CFG_MAGIC;
+  config.dayStartEnergy = 0.0f;
+  config.currentDay = 0;
+  config.energyDayMagic = ENERGY_DAY_MAGIC;
 
   config.consumoEnabled = DEF_CONSUMO_ENABLED;
   config.consumoEnAmperios = DEF_CONSUMO_TIPO_A;
@@ -1674,6 +1685,18 @@ void loadConfig() {
   } else {
     if (isnan(config.icpLogMinAmp) || config.icpLogMinAmp < MIN_ICP_LOG_AMP || config.icpLogMinAmp > MAX_ICP_LOG_AMP) config.icpLogMinAmp = DEF_ICP_LOG_MIN_AMP;
     if (config.icpLogMinNivel > MAX_ICP_LOG_NIVEL) config.icpLogMinNivel = DEF_ICP_LOG_MIN_NIVEL;
+  }
+
+  // Daily-energy tracking state, appended last. Older firmware has garbage here.
+  if (config.energyDayMagic != ENERGY_DAY_MAGIC) {
+    config.dayStartEnergy = 0.0f;
+    config.currentDay = 0;
+    config.energyDayMagic = ENERGY_DAY_MAGIC;
+    saveConfig();
+    logMessage(F("[HIST] Daily energy tracking initialised."));
+  } else {
+    if (isnan(config.dayStartEnergy) || config.dayStartEnergy < 0.0f) config.dayStartEnergy = 0.0f;
+    if (config.currentDay > 31) config.currentDay = 0;
   }
 }
 
@@ -3940,6 +3963,39 @@ void handleConsumo() {
     if (n > 0) server.sendContent(buf);
   }
 
+  // Daily history from the LittleFS file (most recent days). 8-byte records:
+  // {u16 year, u8 month, u8 day, float kwh}.
+  server.sendContent(",\"diario\":[");
+  {
+    File f = LittleFS.open(ENERGY_DAILY_FILE, "r");
+    const uint32_t REC = 8, MAXD = 400;
+    uint32_t total = f ? (uint32_t)(f.size() / REC) : 0;
+    uint32_t startRec = (total > MAXD) ? (total - MAXD) : 0;
+    if (f) f.seek(startRec * REC, SeekSet);
+    bool fd = true;
+    uint8_t b[8];
+    while (f && f.read(b, 8) == 8) {
+      uint16_t y; float kwh; memcpy(&y, b, 2); memcpy(&kwh, b + 4, 4);
+      char buf[80];
+      snprintf(buf, sizeof(buf), "%s{\"año\":%u,\"mes\":%u,\"dia\":%u,\"kwh\":%.3f}",
+               fd ? "" : ",", (unsigned)y, (unsigned)b[2], (unsigned)b[3], (double)kwh);
+      server.sendContent(buf);
+      fd = false;
+    }
+    if (f) f.close();
+  }
+  server.sendContent("]");
+
+  // Today's live consumption so far (cumulative minus the day's anchor).
+  {
+    float today = (isnan(energy) ? 0.0f : energy) - config.dayStartEnergy;
+    if (isnan(today) || today < 0.0f) today = 0.0f;
+    char buf[64];
+    snprintf(buf, sizeof(buf), ",\"dia_actual\":{\"dia\":%u,\"kwh\":%.3f}",
+             (unsigned)config.currentDay, (double)today);
+    server.sendContent(buf);
+  }
+
   server.sendContent("}"); // close root object
 }
 
@@ -4004,8 +4060,10 @@ void handleExport() {
   server.sendContent(buf);
 
   snprintf(buf, sizeof(buf),
-    "\"energy\":{\"reset\":%ld,\"currentMonth\":%u,\"currentYear\":%u,\"historyIndex\":%u,\"history\":[",
-    (long)config.lastEnergyReset, config.currentMonth, config.currentYear, config.historyIndex);
+    "\"energy\":{\"reset\":%ld,\"currentMonth\":%u,\"currentYear\":%u,\"currentDay\":%u,"
+    "\"dayStartEnergy\":%.4f,\"historyIndex\":%u,\"history\":[",
+    (long)config.lastEnergyReset, config.currentMonth, config.currentYear, config.currentDay,
+    (double)config.dayStartEnergy, config.historyIndex);
   server.sendContent(buf);
   bool firstM = true;
   for (int i = 0; i < 24; i++) {
@@ -4105,6 +4163,8 @@ void handleImport() {
     config.lastEnergyReset = (time_t)(en["reset"] | (long)config.lastEnergyReset);
     config.currentMonth = en["currentMonth"] | config.currentMonth;
     config.currentYear = en["currentYear"] | config.currentYear;
+    int cd = en["currentDay"] | config.currentDay;          config.currentDay = (cd < 0 || cd > 31) ? 0 : (uint8_t)cd;
+    float dse = en["dayStartEnergy"] | (float)config.dayStartEnergy;  config.dayStartEnergy = (isnan(dse) || dse < 0.0f) ? 0.0f : dse;
     JsonArray hist = en["history"];
     if (!hist.isNull()) {
       memset(config.monthlyHistory, 0, sizeof(config.monthlyHistory));
@@ -4159,6 +4219,7 @@ void handleImport() {
   config.icpLogMagic = ICP_LOG_MAGIC;
   config.icpSensMagic = ICP_SENS_MAGIC;
   config.icpLogCfgMagic = ICP_LOG_CFG_MAGIC;
+  config.energyDayMagic = ENERGY_DAY_MAGIC;
   saveConfig();
   logMessage(F("[IMPORT] Backup restored."));
   server.send(200, "application/json", "{\"ok\":true}");
@@ -4272,6 +4333,46 @@ void guardarMesActual() {
   }
 }
 
+// Daily energy: append one 8-byte record per COMPLETED day to a LittleFS file
+// {u16 year, u8 month, u8 day, float kwh}. Append-only; a day is never revisited.
+static void fsEnergyDailyAppend(uint16_t y, uint8_t m, uint8_t d, float kwh) {
+  File f = LittleFS.open(ENERGY_DAILY_FILE, "a");
+  if (!f) return;
+  uint8_t b[8];
+  memcpy(b + 0, &y, 2); b[2] = m; b[3] = d; memcpy(b + 4, &kwh, 4);
+  f.write(b, 8);
+  f.close();
+}
+
+// Detects the day boundary and stores the finished day's consumption (the cumulative
+// PZEM energy climbed during that day). MUST run before handleMonthChange() so the
+// last day of a month is captured with the energy value from BEFORE the monthly
+// PZEM reset. dayStartEnergy is re-anchored to 0 by handleMonthChange after a reset.
+void handleDayChange() {
+  time_t now = getCurrentEpoch();
+  if (now < 1609459200) return;
+  struct tm* ti = localtime(&now);
+  uint8_t nD = ti->tm_mday;
+  float e = isnan(energy) ? config.dayStartEnergy : energy;
+
+  if (config.currentDay == 0) {              // first run: anchor, nothing to store yet
+    config.currentDay = nD;
+    config.dayStartEnergy = e;
+    saveConfig();
+    return;
+  }
+  if (config.currentDay != nD) {
+    float dayKwh = e - config.dayStartEnergy;
+    if (isnan(dayKwh) || dayKwh < 0.0f) dayKwh = 0.0f;   // negative = PZEM reset mid-day
+    fsEnergyDailyAppend(config.currentYear, config.currentMonth, config.currentDay, dayKwh);
+    logMessage(String(F("[HIST-D] Day ")) + String(config.currentDay) + "/" +
+               String(config.currentMonth) + " = " + String(dayKwh, 3) + " kWh");
+    config.currentDay = nD;
+    config.dayStartEnergy = e;
+    saveConfig();
+  }
+}
+
 void handleMonthChange() {
   time_t now = getCurrentEpoch();
   if (now < 1609459200) return;
@@ -4295,16 +4396,21 @@ void handleMonthChange() {
     config.currentYear = newY;
     pzem.resetEnergy();
     energy = 0;
+    config.dayStartEnergy = 0.0f;   // the new day/month starts accumulating from zero
     config.lastEnergyReset = now;
     saveConfig(); // force-persist month change (rare event, must survive reboot)
   }
 }
 
 void updateMonthlyEnergyHistory() {
-  static unsigned long lastMonthCheck = 0;
-  if (millis() - lastMonthCheck > 3600000UL) {  // 1 hour
+  static unsigned long lastCheck = 0;
+  // Every 10 min: tighter than the old hourly cadence so a day/month boundary is
+  // caught within ~10 min (keeps daily totals accurate to the last few minutes).
+  // Day BEFORE month: the last day of a month must be captured before the reset.
+  if (millis() - lastCheck > 600000UL) {
+    handleDayChange();
     handleMonthChange();
-    lastMonthCheck = millis();
+    lastCheck = millis();
   }
 }
 
@@ -4340,6 +4446,11 @@ void setup() {
   setupMQTT();
   setupTime();
   recoverICP();
+  // Anchor the day/month counters now (if the clock is up) instead of waiting for
+  // the first 10-min loop tick, so "today so far" is correct from the first read
+  // and a day/month boundary crossed while powered off is settled immediately.
+  handleDayChange();
+  handleMonthChange();
   logMessage(F("[SETUP] Ready. Entering loop."));
 }
 
