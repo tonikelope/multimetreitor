@@ -292,12 +292,6 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
             </table>
             <button type="button" onclick="restaurarCurva()" class="icp-curve-box-btn" style="background:#2b4;margin-top:13px;" data-i18n="restoreDefaults">Restaurar valores por defecto</button>
           </div>
-          <div class="icp-row">
-            <span data-i18n="logFromLevel">Registrar en log desde nivel:</span>
-            <input type="number" min="0" max="100" step="1" name="icpLogNivel" value="%ICP_LOG_NIVEL%" style="width:64px;"> %
-            &nbsp; <span data-i18n="logOrAmp">o corriente:</span>
-            <input type="number" min="0" max="100" step="0.5" name="icpLogAmp" value="%ICP_LOG_AMP%" style="width:64px;"> A
-          </div>
           <div class="icp-row" style="margin-top:10px;">
             <a href="/icp_log" target="_blank" style="color:#1e90ff;text-decoration:none;font-weight:bold;" data-i18n="viewIcpLog">Ver historial de sobrecargas</a>
           </div>
@@ -898,7 +892,7 @@ const char ICPLOG_html[] PROGMEM = R"rawliteral(
     .wrap{max-width:840px;margin:0 auto;}
     .top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;}
     h1{font-size:1.32em;color:#337;margin:0;}
-    a.back{display:inline-block;color:#1e90ff;text-decoration:none;font-weight:bold;font-size:0.95em;margin:8px 0 2px 0;}
+    a.back{display:inline-block;color:#1e90ff;text-decoration:none;font-weight:bold;font-size:0.95em;margin:0;}
     button.refresh{background:#1e90ff;color:#fff;border:none;border-radius:7px;padding:7px 16px;cursor:pointer;font-size:0.9em;}
     button.refresh:active{transform:translateY(1px);}
     .sub{color:#678;font-size:0.9em;margin:2px 0 6px 0;}
@@ -926,10 +920,10 @@ const char ICPLOG_html[] PROGMEM = R"rawliteral(
 <body>
   <div class="wrap">
     <div class="top">
-      <h1 id="title">Historial de sobrecargas ICP</h1>
+      <a class="back" id="back" href="/">&larr; Volver</a>
       <button class="refresh" id="refresh" onclick="load()">Actualizar</button>
     </div>
-    <a class="back" id="back" href="/">&larr; Volver</a>
+    <h1 id="title" style="margin:12px 0 2px 0">Historial de sobrecargas ICP</h1>
     <p class="sub" id="sub"></p>
     <p class="note" id="note" style="display:none"></p>
     <div class="card"><div id="content"><div class="empty">&hellip;</div></div></div>
@@ -1047,7 +1041,7 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
     .wrap{max-width:920px;margin:0 auto;}
     .top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;}
     h1{font-size:1.34em;color:#337;margin:0;}
-    a.back{display:inline-block;color:#1e90ff;text-decoration:none;font-weight:bold;font-size:0.95em;margin:8px 0 2px 0;}
+    a.back{display:inline-block;color:#1e90ff;text-decoration:none;font-weight:bold;font-size:0.95em;margin:0;}
     button.refresh{background:#1e90ff;color:#fff;border:none;border-radius:7px;padding:7px 16px;cursor:pointer;font-size:0.9em;}
     button.refresh:active{transform:translateY(1px);}
     .kpis{display:flex;gap:12px;flex-wrap:wrap;margin:14px 0;}
@@ -1078,10 +1072,10 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
 <body>
   <div class="wrap">
     <div class="top">
-      <h1 id="title">Consumo eléctrico</h1>
+      <a class="back" id="back" href="/">&larr; Volver</a>
       <button class="refresh" id="refresh" onclick="load()">Actualizar</button>
     </div>
-    <a class="back" id="back" href="/">&larr; Volver</a>
+    <h1 id="title" style="margin:12px 0 2px 0">Consumo eléctrico</h1>
     <div class="kpis" id="kpis"></div>
     <div class="card"><h2 id="hMonth">Consumo mensual</h2><div class="chart" id="chMonth"><div class="empty">&hellip;</div></div></div>
     <div class="card"><h2 id="hDay">Consumo diario</h2><div class="chart" id="chDay"><div class="empty">&hellip;</div></div></div>
@@ -3544,18 +3538,7 @@ void handleConfigPost() {
     if (cool > MAX_ICP_COOLDOWN_S) cool = MAX_ICP_COOLDOWN_S;
     config.icpCooldownTime = cool;
   }
-  if (server.hasArg("icpLogNivel")) {
-    int lv = server.arg("icpLogNivel").toInt();
-    if (lv < MIN_ICP_LOG_NIVEL) lv = MIN_ICP_LOG_NIVEL;
-    if (lv > MAX_ICP_LOG_NIVEL) lv = MAX_ICP_LOG_NIVEL;
-    config.icpLogMinNivel = (uint8_t)lv;
-  }
-  if (server.hasArg("icpLogAmp")) {
-    float la = server.arg("icpLogAmp").toFloat();
-    if (isnan(la) || la < MIN_ICP_LOG_AMP) la = MIN_ICP_LOG_AMP;
-    if (la > MAX_ICP_LOG_AMP) la = MAX_ICP_LOG_AMP;
-    config.icpLogMinAmp = la;
-  }
+  // (ICP-log record thresholds are edited on the /icp_log page, not this form.)
 
   // icpCarga is a percentage of THIS breaker's trip point, so nominal and k
   // define the scale it is measured on. Changing them without rescaling
