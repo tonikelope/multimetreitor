@@ -10,6 +10,7 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <EEPROM.h>
+#include <LittleFS.h>   // DIAGNOSTIC (/fsinfo): probe the flash filesystem partition
 #include <SoftwareSerial.h>
 #include <PZEM004Tv30.h>
 #include <ArduinoJson.h>
@@ -3851,6 +3852,120 @@ void handleConsumo() {
   server.sendContent("}"); // close root object
 }
 
+// DIAGNOSTIC ONLY. Reports the real flash chip size, the size this firmware was
+// built for, the OTA headroom, and the LittleFS partition (reserved bytes + live
+// total/used if it mounts). Read once to decide the storage-redesign target, then
+// this endpoint (and the LittleFS include) can be removed. Non-destructive: it
+// mounts but never formats.
+extern "C" uint32_t _FS_start;
+extern "C" uint32_t _FS_end;
+void handleFsInfo() {
+  uint32_t partBytes = (uint32_t)&_FS_end - (uint32_t)&_FS_start;
+  bool mounted = LittleFS.begin();
+  size_t total = 0, used = 0;
+  if (mounted) { FSInfo fi; if (LittleFS.info(fi)) { total = fi.totalBytes; used = fi.usedBytes; } }
+  char buf[320];
+  snprintf(buf, sizeof(buf),
+    "{\"flash_real\":%u,\"flash_configured\":%u,\"sketch\":%u,\"free_ota\":%u,"
+    "\"fs_partition\":%u,\"fs_mounted\":%s,\"fs_total\":%u,\"fs_used\":%u}",
+    (unsigned)ESP.getFlashChipRealSize(), (unsigned)ESP.getFlashChipSize(),
+    (unsigned)ESP.getSketchSize(), (unsigned)ESP.getFreeSketchSpace(),
+    (unsigned)partBytes, mounted ? "true" : "false",
+    (unsigned)total, (unsigned)used);
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json; charset=utf-8", buf);
+}
+
+// --- /export --- whole-device backup as one versioned JSON, downloadable.
+// Streamed by hand (no heap doc) so it scales with the rule/log/history counts,
+// and stores RAW enum/numeric values so /import round-trips exactly. Read-only.
+// Buffers are static (single-threaded web server) to keep them off the stack.
+void handleExport() {
+  static char buf[768];
+  static char e1[80], e2[224], e3[160], e4[160];
+
+  server.sendHeader("Cache-Control", "no-store");
+  server.sendHeader("Content-Disposition", "attachment; filename=multimetreitor-backup.json");
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "application/json; charset=utf-8", "");
+
+  json_escape(config.mqttBroker, e1, sizeof(e1));
+  json_escape(config.mqttClient, e2, sizeof(e2));
+  snprintf(buf, sizeof(buf),
+    "{\"schema\":1,\"device\":\"multimetreitor\","
+    "\"settings\":{\"mqttBroker\":\"%s\",\"mqttClient\":\"%s\",\"refresh\":%lu,"
+    "\"buzzer\":%s,\"lcdMask\":%u,\"lcdLang\":%u,"
+    "\"consumoEnabled\":%s,\"consumoA\":%s,\"consumoValor\":%.2f,"
+    "\"sobreEnabled\":%s,\"sobreValor\":%.1f,\"subEnabled\":%s,\"subValor\":%.1f},",
+    e1, e2, config.refreshInterval,
+    config.alertaSonora ? "true" : "false", config.lcdMask, config.lcdLang,
+    config.consumoEnabled ? "true" : "false", config.consumoEnAmperios ? "true" : "false", (double)config.consumoValor,
+    config.sobretensionEnabled ? "true" : "false", (double)config.sobretensionValor,
+    config.subtensionEnabled ? "true" : "false", (double)config.subtensionValor);
+  server.sendContent(buf);
+
+  snprintf(buf, sizeof(buf),
+    "\"icp\":{\"enabled\":%s,\"nominal\":%.2f,\"umbral\":%d,\"k\":%.2f,\"tau\":%d,"
+    "\"cooldown\":%d,\"avisoMax\":%d,\"sensibilidad\":%u},",
+    config.icpEnabled ? "true" : "false", (double)config.icpNominal, config.icpUmbral,
+    (double)config.icpK, config.icpTau, config.icpCooldownTime, config.icpAvisoMax, config.icpSensibilidad);
+  server.sendContent(buf);
+
+  snprintf(buf, sizeof(buf),
+    "\"energy\":{\"reset\":%ld,\"currentMonth\":%u,\"currentYear\":%u,\"historyIndex\":%u,\"history\":[",
+    (long)config.lastEnergyReset, config.currentMonth, config.currentYear, config.historyIndex);
+  server.sendContent(buf);
+  bool firstM = true;
+  for (int i = 0; i < 24; i++) {
+    const MonthlyData &m = config.monthlyHistory[i];
+    if (m.month == 0) continue;
+    snprintf(buf, sizeof(buf), "%s{\"m\":%u,\"y\":%u,\"kwh\":%.2f}", firstM ? "" : ",",
+             m.month, m.year, (double)m.energy_kWh);
+    server.sendContent(buf);
+    firstM = false;
+  }
+  server.sendContent("]},\"rules\":[");
+
+  for (uint8_t r = 0; r < MAX_RULES; r++) {
+    const Rule &R = config.rules[r];
+    json_escape(R.name, e1, sizeof(e1));
+    snprintf(buf, sizeof(buf),
+      "%s{\"enabled\":%u,\"combine\":%u,\"samples\":%u,\"name\":\"%s\",\"conds\":[",
+      r ? "," : "", R.enabled, R.combine, R.samples, e1);
+    server.sendContent(buf);
+    for (uint8_t c = 0; c < R.condCount && c < MAX_CONDS; c++) {
+      snprintf(buf, sizeof(buf), "%s{\"metric\":%u,\"op\":%u,\"value\":%.4f}", c ? "," : "",
+               R.conds[c].metric, R.conds[c].op, (double)R.conds[c].value);
+      server.sendContent(buf);
+    }
+    server.sendContent("],\"acts\":[");
+    for (uint8_t a = 0; a < R.actCount && a < MAX_ACTIONS; a++) {
+      const RuleActionDef &A = R.acts[a];
+      json_escape(A.target, e2, sizeof(e2));
+      json_escape(A.fire, e3, sizeof(e3));
+      json_escape(A.clear, e4, sizeof(e4));
+      snprintf(buf, sizeof(buf),
+        "%s{\"type\":%u,\"flags\":%u,\"target\":\"%s\",\"fire\":\"%s\",\"clear\":\"%s\"}",
+        a ? "," : "", A.type, A.flags, e2, e3, e4);
+      server.sendContent(buf);
+    }
+    server.sendContent("]}");
+  }
+  server.sendContent("],");
+
+  snprintf(buf, sizeof(buf), "\"icp_log\":{\"index\":%u,\"count\":%u,\"events\":[",
+           config.icpLogIndex, config.icpLogCount);
+  server.sendContent(buf);
+  for (uint8_t n = 0; n < config.icpLogCount && n < MAX_ICP_EVENTS; n++) {
+    const IcpEvent &ev = config.icpLog[n];
+    snprintf(buf, sizeof(buf), "%s{\"ts\":%lu,\"dur\":%u,\"iMaxCa\":%u,\"nivel\":%u,\"flags\":%u}",
+             n ? "," : "", (unsigned long)ev.ts, ev.durSec, ev.iMaxCa, ev.nivelMax, ev.flags);
+    server.sendContent(buf);
+  }
+  server.sendContent("]}}");
+  server.sendContent("");
+}
+
 void setupWeb() {
   // Capture Content-Type so the rule endpoints can enforce application/json
   // (CSRF guard). ESP8266WebServer otherwise discards request headers.
@@ -3866,6 +3981,8 @@ void setupWeb() {
   server.on("/json_alerts", handleJsonAlerts);
   server.on("/json_icp_log", handleJsonIcpLog);
   server.on("/icp_log", handleIcpLog);
+  server.on("/fsinfo", handleFsInfo);   // flash/FS diagnostic
+  server.on("/export", handleExport);   // whole-device backup (JSON)
   server.on("/json_rules", handleJsonRules);
   server.on("/save_rules", HTTP_POST, handleSaveRules);
   server.on("/rule_test", HTTP_POST, handleRuleTest);
@@ -3997,6 +4114,11 @@ void setupHardware() {
   Serial.begin(115200);
   EEPROM.begin(EEPROM_SIZE);
   loadConfig();
+  // Flash filesystem (~2 MB on the 4M2M layout): home for the data that outgrows
+  // the 4 KB EEPROM sector (forensic log, energy history, rules). begin() mounts,
+  // formatting on first use. Non-fatal on failure: the EEPROM config still works.
+  if (LittleFS.begin()) logMessage(F("[FS] LittleFS mounted"));
+  else                  logMessage(F("[FS] LittleFS mount FAILED"));
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
 }
