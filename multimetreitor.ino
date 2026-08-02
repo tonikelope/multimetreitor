@@ -2076,7 +2076,12 @@ void computeICP() {
     icpBarra = objetivo;                 // never late on the way up
   } else {
     icpBarra = objetivo + (icpBarra - objetivo) * expf(-dt / tau);
-    if (icpBarra < 0.5f) icpBarra = 0.0f;   // settle instead of crawling to zero
+    // Once the load can no longer trip (objetivo == 0), don't let the exponential
+    // tail crawl through the single digits: from 1 % it is still ~4-7 min to reach
+    // a 0.5 % floor, so the bar shows a lingering "1 %" long after the danger is
+    // gone. Snap to empty at 2 % (already reads as empty). Guarded by objetivo so a
+    // genuine small time-to-trip settles on its real value instead of blinking to 0.
+    if (objetivo <= 0.0f && icpBarra < 2.0f) icpBarra = 0.0f;
   }
 }
 
