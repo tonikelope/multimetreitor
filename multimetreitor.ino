@@ -888,10 +888,13 @@ const char ICPLOG_html[] PROGMEM = R"rawliteral(
     a.back{display:inline-block;color:#1e90ff;text-decoration:none;font-weight:bold;font-size:0.95em;margin:8px 0 2px 0;}
     button.refresh{background:#1e90ff;color:#fff;border:none;border-radius:7px;padding:7px 16px;cursor:pointer;font-size:0.9em;}
     button.refresh:active{transform:translateY(1px);}
-    .sub{color:#678;font-size:0.9em;margin:2px 0 14px 0;}
+    .sub{color:#678;font-size:0.9em;margin:2px 0 6px 0;}
+    .note{color:#7a6320;background:#fcf8e3;border:1px solid #f3e59a;border-radius:8px;padding:7px 11px;font-size:0.85em;margin:0 0 14px 0;}
     .card{background:#fff;border:1px solid #bbf780;border-radius:13px;padding:4px 6px;box-shadow:0 2px 12px #0001;overflow-x:auto;}
     table{width:100%;border-collapse:collapse;font-size:0.95em;}
-    th{background:#f7ffd7;color:#2b4;text-align:left;padding:10px 11px;font-weight:700;border-bottom:2px solid #bbf780;white-space:nowrap;}
+    th{background:#f7ffd7;color:#2b4;text-align:left;padding:10px 11px;font-weight:700;border-bottom:2px solid #bbf780;white-space:nowrap;cursor:pointer;user-select:none;}
+    th:hover{background:#eef7c8;}
+    th .arr{color:#7aa;font-size:0.82em;margin-left:5px;}
     td{padding:10px 11px;border-bottom:1px solid #eef2ea;vertical-align:middle;white-space:nowrap;}
     tr:last-child td{border-bottom:none;}
     tbody tr.trip{background:#fff3f3;}
@@ -915,6 +918,7 @@ const char ICPLOG_html[] PROGMEM = R"rawliteral(
     </div>
     <a class="back" id="back" href="/">&larr; Volver</a>
     <p class="sub" id="sub"></p>
+    <p class="note" id="note" style="display:none"></p>
     <div class="card"><div id="content"><div class="empty">&hellip;</div></div></div>
   </div>
   <script>
@@ -924,35 +928,41 @@ const char ICPLOG_html[] PROGMEM = R"rawliteral(
           thTime:'Fecha y hora',thDur:'Duración',thPeak:'Pico',thLevel:'Nivel máx.',thState:'Estado',
           trip:'SALTO',empty:'No hay episodios registrados.',
           sub:'Nominal {n} A · se registra desde {u} A · {c} episodios',
+          note:'Por falta de espacio solo se registran episodios que alcanzan el {x} % de nivel; los saltos siempre se conservan.',
           noclock:'sin reloj',err:'Error al cargar el registro.'},
       en:{title:'ICP overload history',back:'← Back',refresh:'Refresh',
           thTime:'Date & time',thDur:'Duration',thPeak:'Peak',thLevel:'Max level',thState:'State',
           trip:'TRIP',empty:'No episodes recorded.',
           sub:'Nominal {n} A · recorded from {u} A · {c} episodes',
+          note:'For space, only episodes reaching {x} % level are recorded; trips are always kept.',
           noclock:'no clock',err:'Failed to load the log.'}
     };
     var L=T[LANG]||T.es;
+    var DATA=null, sortKey='ts', sortDir=-1;
+    var COLS=[{k:'ts',lab:'thTime'},{k:'dur_s',lab:'thDur'},{k:'i_max_a',lab:'thPeak'},
+              {k:'nivel_max',lab:'thLevel'},{k:'disparo',lab:'thState'}];
     function pad2(n){return (n<10?'0':'')+n;}
     function fmtDur(s){if(s<60)return s+'s';var m=Math.floor(s/60);return m+'m'+pad2(s%60)+'s';}
     function fmtTime(ts){if(!ts)return '<span class="dash">'+L.noclock+'</span>';
       var d=new Date(ts*1000);return d.toLocaleString(LANG==='es'?'es-ES':'en-GB');}
     function fillColor(n){var h=Math.round(120-1.2*n);if(h<0)h=0;return 'hsl('+h+',72%,45%)';}
     function num(x){return (typeof x==='number'&&isFinite(x))?x:0;}
+    function val(e,k){return k==='disparo'?(e.disparo?1:0):num(e[k]);}
     function applyStatic(){
       document.getElementById('title').textContent=L.title;
       document.getElementById('back').textContent=L.back;
       document.getElementById('refresh').textContent=L.refresh;
     }
-    function render(j){
-      var ev=(j&&j.eventos)?j.eventos:[];
-      document.getElementById('sub').textContent=L.sub
-        .replace('{n}',num(j.nominal).toFixed(0))
-        .replace('{u}',num(j.umbral_registro_a).toFixed(2))
-        .replace('{c}',ev.length);
-      if(!ev.length){document.getElementById('content').innerHTML='<div class="empty">'+L.empty+'</div>';return;}
-      var h='<table><thead><tr>'
-        +'<th>'+L.thTime+'</th><th>'+L.thDur+'</th><th>'+L.thPeak+'</th><th>'+L.thLevel+'</th><th>'+L.thState+'</th>'
-        +'</tr></thead><tbody>';
+    function sortBy(k){ if(sortKey===k){sortDir=-sortDir;}else{sortKey=k;sortDir=-1;} draw(); }
+    function draw(){
+      var ev=(DATA&&DATA.eventos)?DATA.eventos.slice():[];
+      ev.sort(function(a,b){var d=val(a,sortKey)-val(b,sortKey);if(d===0)d=num(a.ts)-num(b.ts);return sortDir*d;});
+      var h='<table><thead><tr>';
+      COLS.forEach(function(c){
+        var arr=(sortKey===c.k)?'<span class="arr">'+(sortDir<0?'&#9660;':'&#9650;')+'</span>':'';
+        h+='<th onclick="sortBy(\''+c.k+'\')">'+L[c.lab]+arr+'</th>';
+      });
+      h+='</tr></thead><tbody>';
       ev.forEach(function(e){
         var trip=!!e.disparo, n=num(e.nivel_max);
         h+='<tr class="'+(trip?'trip':'')+'">'
@@ -965,6 +975,19 @@ const char ICPLOG_html[] PROGMEM = R"rawliteral(
       });
       h+='</tbody></table>';
       document.getElementById('content').innerHTML=h;
+    }
+    function render(j){
+      DATA=j;
+      var ev=(j&&j.eventos)?j.eventos:[];
+      document.getElementById('sub').textContent=L.sub
+        .replace('{n}',num(j.nominal).toFixed(0))
+        .replace('{u}',num(j.umbral_registro_a).toFixed(2))
+        .replace('{c}',ev.length);
+      var nt=document.getElementById('note');
+      if(j&&j.umbral_nivel!==undefined){nt.textContent=L.note.replace('{x}',j.umbral_nivel);nt.style.display='';}
+      else{nt.style.display='none';}
+      if(!ev.length){document.getElementById('content').innerHTML='<div class="empty">'+L.empty+'</div>';return;}
+      draw();
     }
     function showErr(){document.getElementById('content').innerHTML='<div class="empty">'+L.err+'</div>';}
     function load(){
@@ -1116,6 +1139,12 @@ static const float MAX_CONSUMO_VAL = 10000.0f;
 // An episode is closed after this many consecutive readings back below the
 // threshold, so a load that dips for a moment does not split into two.
 #define ICP_LOG_GRACE_SAMPLES 20
+// Minimum peak danger level (%) an episode must reach to earn a slot in the ring.
+// With only MAX_ICP_EVENTS slots, a burst of brief spikes that never built any
+// real heat (nivel ~0 %) would otherwise evict the episodes worth keeping. Trips
+// are exempt (recorded via icpLogAppend directly, never gated) and, once stored,
+// are protected from eviction. Surfaced to the viewer so the UI can state it.
+#define ICP_LOG_MIN_NIVEL 10
 
 struct IcpEvent {
   uint32_t ts;        // epoch when the episode started (0 if no valid clock)
@@ -2228,15 +2257,39 @@ float icpNivelPeligro() {
 // Appends one episode to the forensic ring buffer. Not saved to EEPROM here:
 // the caller decides, so a burst of episodes cannot hammer the flash.
 static void icpLogAppend(uint32_t ts, uint16_t durSec, float iMax, uint8_t nivelMax, uint8_t flags) {
-  IcpEvent &e = config.icpLog[config.icpLogIndex % MAX_ICP_EVENTS];
+  // Pick the slot. While the ring is filling, append sequentially. Once full,
+  // evict the OLDEST LOW-PRIORITY episode rather than the strict-oldest, so a
+  // probable trip is never lost to a later burst of minor spikes: prefer the
+  // oldest non-trip; only if every slot is a trip do we sacrifice the oldest trip.
+  // Slot order is therefore no longer chronological, but every event carries its
+  // own ts and both the JSON reader's consumers and the viewer sort by it.
+  uint8_t slot;
+  if (config.icpLogCount < MAX_ICP_EVENTS) {
+    slot = config.icpLogCount;
+    config.icpLogCount++;
+  } else {
+    slot = 0xFF;
+    uint32_t oldest = 0xFFFFFFFFUL;
+    for (uint8_t i = 0; i < MAX_ICP_EVENTS; i++) {
+      if (config.icpLog[i].flags & ICP_EV_TRIPPED) continue;   // protect trips
+      if (config.icpLog[i].ts <= oldest) { oldest = config.icpLog[i].ts; slot = i; }
+    }
+    if (slot == 0xFF) {   // every slot is a trip: sacrifice the oldest trip
+      oldest = 0xFFFFFFFFUL;
+      for (uint8_t i = 0; i < MAX_ICP_EVENTS; i++) {
+        if (config.icpLog[i].ts <= oldest) { oldest = config.icpLog[i].ts; slot = i; }
+      }
+    }
+  }
+  config.icpLogIndex = (uint8_t)((slot + 1) % MAX_ICP_EVENTS);  // kept in range; order is by ts now
+
+  IcpEvent &e = config.icpLog[slot];
   e.ts = ts;
   e.durSec = durSec;
   float ca = iMax * 100.0f;
   e.iMaxCa = (isnan(ca) || ca < 0) ? 0 : (ca > 65535.0f ? 65535 : (uint16_t)ca);
   e.nivelMax = nivelMax > 100 ? 100 : nivelMax;
   e.flags = flags;
-  config.icpLogIndex = (uint8_t)((config.icpLogIndex + 1) % MAX_ICP_EVENTS);
-  if (config.icpLogCount < MAX_ICP_EVENTS) config.icpLogCount++;
 
   // Also publish it: the ring only holds MAX_ICP_EVENTS, while anything
   // subscribed to this topic can archive them without limit.
@@ -2313,12 +2366,21 @@ void icpLogUpdate() {
   unsigned long graceMs   = (unsigned long)belowCount * config.refreshInterval;
   unsigned long durMs = (elapsedMs > graceMs) ? (elapsedMs - graceMs) : 0;
   unsigned long durS = durMs / 1000UL;
-  icpLogAppend(startTs, durS > 65535 ? 65535 : (uint16_t)durS, iMax, nivelMax, 0);
   active = false;
   belowCount = 0;
-  logMessage(String(F("[ICP-LOG] Episode: ")) + String(iMax, 2) + F(" A max, ") +
-             String(durS) + F(" s, level ") + String(nivelMax) + F("%"));
-  safeBackgroundSaveConfig();
+  // Only spend a ring slot on episodes that reached a meaningful danger level.
+  // Brief spikes that never built heat (nivel < ICP_LOG_MIN_NIVEL) are dropped so
+  // they cannot evict the episodes worth keeping. Trips never reach here (they are
+  // recorded from recoverICP), so this gate can never drop a trip.
+  if (nivelMax >= ICP_LOG_MIN_NIVEL) {
+    icpLogAppend(startTs, durS > 65535 ? 65535 : (uint16_t)durS, iMax, nivelMax, 0);
+    logMessage(String(F("[ICP-LOG] Episode: ")) + String(iMax, 2) + F(" A max, ") +
+               String(durS) + F(" s, level ") + String(nivelMax) + F("%"));
+    safeBackgroundSaveConfig();
+  } else {
+    logMessage(String(F("[ICP-LOG] Episode below ")) + String(ICP_LOG_MIN_NIVEL) +
+               F("% not stored: ") + String(iMax, 2) + F(" A, ") + String(durS) + F(" s"));
+  }
 }
 
 // Seconds left before the modelled trip at the present current, or -1 when the
@@ -3554,8 +3616,8 @@ void handleJsonIcpLog() {
   if (kLog > MAX_ICP_K) kLog = MAX_ICP_K;
   float logMult = (kLog < ICP_NEVER_TRIP_MULT) ? kLog : ICP_NEVER_TRIP_MULT;
   snprintf(buf, sizeof(buf),
-           "{\"nominal\":%.2f,\"umbral_registro_a\":%.2f,\"eventos\":[",
-           (double)config.icpNominal, (double)(logMult * config.icpNominal));
+           "{\"nominal\":%.2f,\"umbral_registro_a\":%.2f,\"umbral_nivel\":%d,\"eventos\":[",
+           (double)config.icpNominal, (double)(logMult * config.icpNominal), ICP_LOG_MIN_NIVEL);
   server.sendContent(buf);
 
   // Walk the ring backwards from the most recent slot.
