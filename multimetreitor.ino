@@ -4147,14 +4147,16 @@ void handleFsInfo() {
   bool mounted = LittleFS.begin();
   size_t total = 0, used = 0;
   if (mounted) { FSInfo fi; if (LittleFS.info(fi)) { total = fi.totalBytes; used = fi.usedBytes; } }
-  char buf[320];
+  char buf[380];
   snprintf(buf, sizeof(buf),
     "{\"flash_real\":%u,\"flash_configured\":%u,\"sketch\":%u,\"free_ota\":%u,"
-    "\"fs_partition\":%u,\"fs_mounted\":%s,\"fs_total\":%u,\"fs_used\":%u}",
+    "\"fs_partition\":%u,\"fs_mounted\":%s,\"fs_total\":%u,\"fs_used\":%u,"
+    "\"free_heap\":%u,\"heap_frag\":%u,\"max_block\":%u}",
     (unsigned)ESP.getFlashChipRealSize(), (unsigned)ESP.getFlashChipSize(),
     (unsigned)ESP.getSketchSize(), (unsigned)ESP.getFreeSketchSpace(),
     (unsigned)partBytes, mounted ? "true" : "false",
-    (unsigned)total, (unsigned)used);
+    (unsigned)total, (unsigned)used,
+    (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getHeapFragmentation(), (unsigned)ESP.getMaxFreeBlockSize());
   server.sendHeader("Cache-Control", "no-store");
   server.send(200, "application/json; charset=utf-8", buf);
 }
