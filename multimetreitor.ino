@@ -333,7 +333,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
           <label><input type='checkbox' name='lcd_icp' %LCD_ICP%><span data-i18n="icp">ICP</span></label>
         </div>
       </div>
-      <div class="desc"><a href="/consumo" target="_blank" style="color: #1e90ff; text-decoration: none; font-weight: bold;" data-i18n="viewHistory">Ver Historial de Consumo</a></div>
+      <div class="desc"><a href="/consumos" target="_blank" style="color: #1e90ff; text-decoration: none; font-weight: bold;" data-i18n="viewHistory">Ver Historial de Consumo</a></div>
       <div class="desc"><span data-i18n="countingSince">Contando energía desde hace:</span> <span id="lastResetTime">%LAST_RESET_TIME%</span></div>
       <div class="form-actions">
         <button type="button" onclick="wipeEEPROM()" class="action-btn eeprom" data-i18n="wipeMemory">Borrar memoria</button>
@@ -1002,6 +1002,130 @@ const char ICPLOG_html[] PROGMEM = R"rawliteral(
     function load(){
       document.getElementById('content').innerHTML='<div class="empty">&hellip;</div>';
       fetch('/json_icp_log',{cache:'no-store'}).then(function(r){return r.json();}).then(render).catch(showErr);
+    }
+    applyStatic();load();
+  </script>
+</body>
+</html>
+)rawliteral";
+
+// Electricity-usage viewer. Static except for %LANG%; fetches /consumo (JSON) and
+// draws monthly + daily bar charts in the browser, so nothing runs on the device
+// beyond serving the page. Single series (kWh) → one accent colour, no legend,
+// value on hover, current period highlighted.
+const char CONSUMO_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset='utf-8'>
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+  <title>CONSUMOS</title>
+  <style>
+    *{box-sizing:border-box;}
+    body{font-family:'Segoe UI',system-ui,Arial,sans-serif;background:#eef3e6;color:#223;margin:0;padding:18px;}
+    .wrap{max-width:920px;margin:0 auto;}
+    .top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+    h1{font-size:1.34em;color:#337;margin:0;}
+    a.back{display:inline-block;color:#1e90ff;text-decoration:none;font-weight:bold;font-size:0.95em;margin:8px 0 2px 0;}
+    button.refresh{background:#1e90ff;color:#fff;border:none;border-radius:7px;padding:7px 16px;cursor:pointer;font-size:0.9em;}
+    button.refresh:active{transform:translateY(1px);}
+    .kpis{display:flex;gap:12px;flex-wrap:wrap;margin:14px 0;}
+    .kpi{flex:1;min-width:150px;background:#fff;border:1px solid #bbf780;border-radius:12px;padding:11px 16px;box-shadow:0 2px 10px #0001;}
+    .kpi .lbl{color:#789;font-size:0.74em;text-transform:uppercase;letter-spacing:.5px;}
+    .kpi .val{font-size:1.55em;font-weight:700;color:#2b7a2b;font-variant-numeric:tabular-nums;}
+    .kpi .val small{font-size:.5em;color:#89a;font-weight:600;margin-left:3px;}
+    .card{background:#fff;border:1px solid #bbf780;border-radius:13px;padding:14px 16px 10px;box-shadow:0 2px 12px #0001;margin-bottom:16px;}
+    .card h2{font-size:1.03em;color:#2b7a2b;margin:0 0 14px 0;}
+    .chart{display:flex;align-items:flex-end;gap:5px;height:172px;overflow-x:auto;padding-top:20px;}
+    .bar{position:relative;flex:1 0 auto;min-width:15px;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;cursor:default;}
+    .bar .fill{position:relative;width:74%;max-width:34px;background:#3aa657;border-radius:4px 4px 0 0;min-height:2px;transition:height .3s,filter .1s;}
+    .bar.cur .fill{background:#1e90ff;}
+    .bar .lab{font-size:.71em;color:#789;margin-top:5px;white-space:nowrap;}
+    .bar .val{position:absolute;top:3px;left:50%;transform:translateX(-50%);font-size:.66em;color:#fff;font-weight:700;text-shadow:0 1px 2px rgba(0,0,0,.5);font-variant-numeric:tabular-nums;white-space:nowrap;opacity:0;transition:opacity .1s;pointer-events:none;}
+    .bar:hover .fill{filter:brightness(1.1);}
+    .bar:hover .val{opacity:1;}
+    .bar.showval .val{opacity:1;}
+    .empty{color:#89a;text-align:center;padding:26px 10px;font-size:1.02em;}
+    @media (prefers-color-scheme: dark){
+      body{background:#1a1e17;color:#dde8d6;}
+      .card,.kpi{background:#242a20;border-color:#3c4d2c;box-shadow:none;}
+      h1{color:#9cf;} .kpi .val{color:#84ce84;} .card h2{color:#84ce84;} .kpi .lbl{color:#9ab08e;}
+      .bar .lab{color:#9ab08e;} .bar .fill{background:#43b061;}
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <h1 id="title">Consumo eléctrico</h1>
+      <button class="refresh" id="refresh" onclick="load()">Actualizar</button>
+    </div>
+    <a class="back" id="back" href="/">&larr; Volver</a>
+    <div class="kpis" id="kpis"></div>
+    <div class="card"><h2 id="hMonth">Consumo mensual</h2><div class="chart" id="chMonth"><div class="empty">&hellip;</div></div></div>
+    <div class="card"><h2 id="hDay">Consumo diario</h2><div class="chart" id="chDay"><div class="empty">&hellip;</div></div></div>
+  </div>
+  <script>
+    var LANG='%LANG%';
+    var DAYS_SHOWN=31;
+    var T={
+      es:{title:'Consumo eléctrico',back:'← Volver',refresh:'Actualizar',
+          month:'Consumo mensual',day:'Consumo diario (últimos {n} días)',
+          kToday:'Hoy',kMonth:'Este mes',kAvg:'Media diaria',
+          empty:'Sin datos todavía',err:'Error al cargar los consumos.',
+          months:['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic']},
+      en:{title:'Electricity usage',back:'← Back',refresh:'Refresh',
+          month:'Monthly usage',day:'Daily usage (last {n} days)',
+          kToday:'Today',kMonth:'This month',kAvg:'Daily avg',
+          empty:'No data yet',err:'Failed to load usage data.',
+          months:['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']}
+    };
+    var L=T[LANG]||T.es;
+    function num(x){var v=parseFloat(x);return isFinite(v)?v:0;}
+    function fmt(v){return (v>=100?v.toFixed(0):v.toFixed(v>=10?1:2));}
+    function applyStatic(){
+      document.getElementById('title').textContent=L.title;
+      document.getElementById('back').textContent=L.back;
+      document.getElementById('refresh').textContent=L.refresh;
+      document.getElementById('hMonth').textContent=L.month;
+      document.getElementById('hDay').textContent=L.day.replace('{n}',DAYS_SHOWN);
+    }
+    function kpi(lbl,val){return '<div class="kpi"><div class="lbl">'+lbl+'</div><div class="val">'+val+' <small>kWh</small></div></div>';}
+    function drawChart(el,items,showVals){
+      if(!items.length){el.innerHTML='<div class="empty">'+L.empty+'</div>';return;}
+      var max=0; items.forEach(function(it){if(it.v>max)max=it.v;}); if(max<=0)max=1;
+      var h='';
+      items.forEach(function(it){
+        var px=Math.max(2,Math.round(it.v/max*140));
+        h+='<div class="bar'+(it.cur?' cur':'')+(showVals?' showval':'')+'" title="'+it.lab+': '+fmt(it.v)+' kWh">'
+          +'<div class="fill" style="height:'+px+'px"><span class="val">'+fmt(it.v)+'</span></div>'
+          +'<div class="lab">'+it.lab+'</div></div>';
+      });
+      el.innerHTML=h;
+    }
+    function render(j){
+      // Monthly: completed months (sorted by year, month) + the current month.
+      var hist=(j.historial||[]).map(function(m){return {y:+m['año'],mo:+m.mes,v:num(m.consumo),cur:false};});
+      hist.sort(function(a,b){return a.y-b.y||a.mo-b.mo;});
+      var months=hist.map(function(m){return {v:m.v,lab:L.months[(m.mo-1)%12]+" '"+String(m.y).slice(2)};});
+      var curMonthV=0;
+      if(j.mes_actual){curMonthV=num(j.mes_actual.consumo);
+        months.push({v:curMonthV,lab:L.months[(+j.mes_actual.mes-1)%12]+" '"+String(j.mes_actual['año']).slice(2),cur:true});}
+      drawChart(document.getElementById('chMonth'),months,months.length<=14);
+      // Daily: recent DAYS_SHOWN completed days + today.
+      var dias=(j.diario||[]).map(function(d){return {v:num(d.kwh),lab:String(d.dia),cur:false};});
+      var today=j.dia_actual?num(j.dia_actual.kwh):0;
+      if(j.dia_actual){dias.push({v:today,lab:String(j.dia_actual.dia),cur:true});}
+      dias=dias.slice(-DAYS_SHOWN);
+      drawChart(document.getElementById('chDay'),dias,dias.length<=16);
+      // KPIs
+      var avg=0,cnt=0;(j.diario||[]).forEach(function(d){avg+=num(d.kwh);cnt++;}); avg=cnt?avg/cnt:0;
+      document.getElementById('kpis').innerHTML=
+        kpi(L.kToday,fmt(today))+kpi(L.kMonth,fmt(curMonthV))+kpi(L.kAvg,fmt(avg));
+    }
+    function showErr(){document.getElementById('kpis').innerHTML='';document.getElementById('chMonth').innerHTML='<div class="empty">'+L.err+'</div>';document.getElementById('chDay').innerHTML='';}
+    function load(){
+      fetch('/consumo',{cache:'no-store'}).then(function(r){return r.json();}).then(render).catch(showErr);
     }
     applyStatic();load();
   </script>
@@ -3479,6 +3603,14 @@ void handleIcpLog() {
   streamHtmlTemplate(ICPLOG_html);
 }
 
+// Pretty electricity-usage page (charts). Fetches /consumo (JSON) client-side.
+void handleConsumoPage() {
+  server.sendHeader("Cache-Control", "no-store");
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "text/html; charset=utf-8", "");
+  streamHtmlTemplate(CONSUMO_html);
+}
+
 void handleReset() {
   server.send(200, "text/html", "OK");
   delay(300);
@@ -4240,6 +4372,7 @@ void setupWeb() {
   server.on("/json_alerts", handleJsonAlerts);
   server.on("/json_icp_log", handleJsonIcpLog);
   server.on("/icp_log", handleIcpLog);
+  server.on("/consumos", handleConsumoPage);   // pretty energy-usage page
   server.on("/fsinfo", handleFsInfo);   // flash/FS diagnostic
   server.on("/export", handleExport);   // whole-device backup (JSON)
   server.on("/import", HTTP_POST, handleImport);  // restore a backup
