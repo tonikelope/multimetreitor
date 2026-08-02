@@ -3966,6 +3966,126 @@ void handleExport() {
   server.sendContent("");
 }
 
+// --- /import (POST) --- restores a /export backup (schema 1). Every field is
+// CLAMPED to its valid range rather than rejected, so a hand-edited backup can
+// never leave an out-of-range value that loadConfig() would later wipe the whole
+// config over; missing fields keep their current value. CSRF-guarded like the
+// rule endpoints. Applies live (config is read each cycle) — no reboot needed.
+void handleImport() {
+  if (server.method() != HTTP_POST || !rulesContentTypeOk()) { server.send(415, "application/json", "{\"ok\":false,\"error\":\"content-type\"}"); return; }
+  if (!server.hasArg("plain")) { server.send(400, "application/json", "{\"ok\":false,\"error\":\"empty\"}"); return; }
+  DynamicJsonDocument doc(8192);
+  if (deserializeJson(doc, server.arg("plain")) || !doc.is<JsonObject>()) { server.send(400, "application/json", "{\"ok\":false,\"error\":\"json\"}"); return; }
+  if ((int)(doc["schema"] | 0) != 1) { server.send(400, "application/json", "{\"ok\":false,\"error\":\"schema\"}"); return; }
+
+  JsonObject s = doc["settings"];
+  if (!s.isNull()) {
+    const char* b = s["mqttBroker"] | (const char*)config.mqttBroker;
+    const char* c = s["mqttClient"] | (const char*)config.mqttClient;
+    if (strnlen(b, 32) >= 7 && strnlen(b, 32) <= 31) strlcpy(config.mqttBroker, b, sizeof(config.mqttBroker));
+    if (strnlen(c, 32) >= 3 && strnlen(c, 32) <= 31) strlcpy(config.mqttClient, c, sizeof(config.mqttClient));
+    long rf = s["refresh"] | (long)config.refreshInterval;
+    config.refreshInterval = (unsigned long)(rf < (long)MIN_REFRESH_MS ? MIN_REFRESH_MS : (rf > (long)MAX_REFRESH_MS ? MAX_REFRESH_MS : rf));
+    config.alertaSonora = s["buzzer"] | config.alertaSonora;
+    config.lcdMask = s["lcdMask"] | config.lcdMask;
+    uint8_t lang = s["lcdLang"] | config.lcdLang; config.lcdLang = (lang > LANG_EN) ? DEF_LCD_LANG : lang;
+    config.consumoEnabled = s["consumoEnabled"] | config.consumoEnabled;
+    config.consumoEnAmperios = s["consumoA"] | config.consumoEnAmperios;
+    config.consumoValor = s["consumoValor"] | config.consumoValor;
+    config.sobretensionEnabled = s["sobreEnabled"] | config.sobretensionEnabled;
+    config.sobretensionValor = s["sobreValor"] | config.sobretensionValor;
+    config.subtensionEnabled = s["subEnabled"] | config.subtensionEnabled;
+    config.subtensionValor = s["subValor"] | config.subtensionValor;
+    // Disable a voltage alert whose limit is out of range instead of wiping.
+    if (config.sobretensionEnabled && (isnan(config.sobretensionValor) || config.sobretensionValor < MIN_VOLTAGE_LIMIT || config.sobretensionValor > MAX_VOLTAGE_LIMIT)) config.sobretensionEnabled = false;
+    if (config.subtensionEnabled && (isnan(config.subtensionValor) || config.subtensionValor < MIN_VOLTAGE_LIMIT || config.subtensionValor > MAX_VOLTAGE_LIMIT)) config.subtensionEnabled = false;
+  }
+
+  JsonObject ic = doc["icp"];
+  if (!ic.isNull()) {
+    config.icpEnabled = ic["enabled"] | config.icpEnabled;
+    float nom = ic["nominal"] | (float)config.icpNominal;
+    config.icpNominal = (isnan(nom) || nom < MIN_ICP_NOMINAL_A) ? MIN_ICP_NOMINAL_A : (nom > MAX_ICP_NOMINAL_A ? MAX_ICP_NOMINAL_A : nom);
+    int um = ic["umbral"] | config.icpUmbral;               config.icpUmbral = um < MIN_ICP_UMBRAL ? MIN_ICP_UMBRAL : (um > MAX_ICP_UMBRAL ? MAX_ICP_UMBRAL : um);
+    float kk = ic["k"] | (float)config.icpK;                config.icpK = (isnan(kk) || kk < MIN_ICP_K) ? MIN_ICP_K : (kk > MAX_ICP_K ? MAX_ICP_K : kk);
+    int tau = ic["tau"] | config.icpTau;                    config.icpTau = tau < MIN_ICP_TAU_S ? MIN_ICP_TAU_S : (tau > MAX_ICP_TAU_S ? MAX_ICP_TAU_S : tau);
+    int cd = ic["cooldown"] | config.icpCooldownTime;       config.icpCooldownTime = cd < MIN_ICP_COOLDOWN_S ? MIN_ICP_COOLDOWN_S : (cd > MAX_ICP_COOLDOWN_S ? MAX_ICP_COOLDOWN_S : cd);
+    int av = ic["avisoMax"] | config.icpAvisoMax;           config.icpAvisoMax = av < MIN_ICP_AVISO_S ? MIN_ICP_AVISO_S : (av > MAX_ICP_AVISO_S ? MAX_ICP_AVISO_S : av);
+    int se = ic["sensibilidad"] | config.icpSensibilidad;   config.icpSensibilidad = se < 0 ? 0 : (se > MAX_ICP_SENS ? MAX_ICP_SENS : se);
+  }
+
+  JsonObject en = doc["energy"];
+  if (!en.isNull()) {
+    config.lastEnergyReset = (time_t)(en["reset"] | (long)config.lastEnergyReset);
+    config.currentMonth = en["currentMonth"] | config.currentMonth;
+    config.currentYear = en["currentYear"] | config.currentYear;
+    JsonArray hist = en["history"];
+    if (!hist.isNull()) {
+      memset(config.monthlyHistory, 0, sizeof(config.monthlyHistory));
+      int i = 0;
+      for (JsonObject m : hist) { if (i >= 24) break; config.monthlyHistory[i].month = m["m"] | 0; config.monthlyHistory[i].year = m["y"] | 0; config.monthlyHistory[i].energy_kWh = m["kwh"] | 0.0f; i++; }
+      config.historyIndex = (uint8_t)((en["historyIndex"] | i) % 24);
+    }
+  }
+
+  JsonArray rl = doc["rules"];
+  if (!rl.isNull()) {
+    memset(config.rules, 0, sizeof(config.rules));
+    int r = 0;
+    for (JsonObject ro : rl) {
+      if (r >= MAX_RULES) break;
+      Rule &R = config.rules[r];
+      R.enabled = (ro["enabled"] | 0) ? 1 : 0;
+      R.combine = ro["combine"] | 0;
+      R.samples = ro["samples"] | RULE_DEF_SAMPLES;
+      strlcpy(R.name, ro["name"] | "", sizeof(R.name));
+      uint8_t cc = 0;
+      for (JsonObject co : ro["conds"].as<JsonArray>()) { if (cc >= MAX_CONDS) break; R.conds[cc].metric = co["metric"] | 0; R.conds[cc].op = co["op"] | 0; R.conds[cc].value = co["value"] | 0.0f; cc++; }
+      R.condCount = cc;
+      uint8_t ac = 0;
+      for (JsonObject ao : ro["acts"].as<JsonArray>()) { if (ac >= MAX_ACTIONS) break; R.acts[ac].type = ao["type"] | 0; R.acts[ac].flags = ao["flags"] | 0; strlcpy(R.acts[ac].target, ao["target"] | "", sizeof(R.acts[ac].target)); strlcpy(R.acts[ac].fire, ao["fire"] | "", sizeof(R.acts[ac].fire)); strlcpy(R.acts[ac].clear, ao["clear"] | "", sizeof(R.acts[ac].clear)); ac++; }
+      R.actCount = ac;
+      r++;
+    }
+    // Same defensive clamp loadConfig() applies, so the imported table is sane.
+    for (uint8_t i = 0; i < MAX_RULES; i++) {
+      Rule &r2 = config.rules[i];
+      if (r2.condCount > MAX_CONDS) r2.condCount = MAX_CONDS;
+      if (r2.actCount > MAX_ACTIONS) r2.actCount = MAX_ACTIONS;
+      if (r2.combine > RC_OR) r2.combine = RC_AND;
+      if (r2.samples < RULE_MIN_SAMPLES || r2.samples > RULE_MAX_SAMPLES) r2.samples = RULE_DEF_SAMPLES;
+      for (uint8_t k = 0; k < r2.condCount; k++) { if (r2.conds[k].metric >= RM_COUNT) r2.conds[k].metric = RM_CURRENT; if (r2.conds[k].op >= RO_COUNT) r2.conds[k].op = RO_GT; }
+      r2.name[sizeof(r2.name) - 1] = '\0';
+      bool hasTarget = false;
+      for (uint8_t a = 0; a < MAX_ACTIONS; a++) { RuleActionDef &act = r2.acts[a]; if (act.type > RA_WEBHOOK) act.type = RA_MQTT; act.target[sizeof(act.target) - 1] = '\0'; act.fire[sizeof(act.fire) - 1] = '\0'; act.clear[sizeof(act.clear) - 1] = '\0'; if (a < r2.actCount && act.target[0] != '\0') hasTarget = true; }
+      if (r2.enabled && (r2.condCount == 0 || r2.actCount == 0 || !hasTarget)) r2.enabled = 0;
+    }
+  }
+
+  JsonObject lg = doc["icp_log"];
+  if (!lg.isNull()) {
+    JsonArray evs = lg["events"];
+    if (!evs.isNull()) {
+      memset(config.icpLog, 0, sizeof(config.icpLog));
+      int i = 0;
+      for (JsonObject ev : evs) { if (i >= MAX_ICP_EVENTS) break; config.icpLog[i].ts = ev["ts"] | 0UL; config.icpLog[i].durSec = ev["dur"] | 0; config.icpLog[i].iMaxCa = ev["iMaxCa"] | 0; uint8_t nv = ev["nivel"] | 0; config.icpLog[i].nivelMax = nv > 100 ? 100 : nv; config.icpLog[i].flags = ev["flags"] | 0; i++; }
+      config.icpLogCount = (uint8_t)i;
+      config.icpLogIndex = (uint8_t)((lg["index"] | i) % MAX_ICP_EVENTS);
+    }
+  }
+
+  // Re-assert every magic so the imported blocks are trusted on the next boot.
+  config.magic = CONFIG_MAGIC;
+  config.version = CONFIG_VERSION;
+  config.rulesMagic = RULES_MAGIC;
+  config.icpModelMagic = ICP_MODEL_MAGIC;
+  config.icpLogMagic = ICP_LOG_MAGIC;
+  config.icpSensMagic = ICP_SENS_MAGIC;
+  saveConfig();
+  logMessage(F("[IMPORT] Backup restored."));
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
 void setupWeb() {
   // Capture Content-Type so the rule endpoints can enforce application/json
   // (CSRF guard). ESP8266WebServer otherwise discards request headers.
@@ -3983,6 +4103,7 @@ void setupWeb() {
   server.on("/icp_log", handleIcpLog);
   server.on("/fsinfo", handleFsInfo);   // flash/FS diagnostic
   server.on("/export", handleExport);   // whole-device backup (JSON)
+  server.on("/import", HTTP_POST, handleImport);  // restore a backup
   server.on("/json_rules", handleJsonRules);
   server.on("/save_rules", HTTP_POST, handleSaveRules);
   server.on("/rule_test", HTTP_POST, handleRuleTest);
