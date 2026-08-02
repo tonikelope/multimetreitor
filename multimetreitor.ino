@@ -941,13 +941,13 @@ const char ICPLOG_html[] PROGMEM = R"rawliteral(
           thTime:'Fecha y hora',thDur:'Duración',thPeak:'Pico',thLevel:'Nivel máx.',thState:'Estado',
           trip:'SALTO',empty:'No hay episodios registrados.',
           sub:'Nominal {n} A · se registra desde {u} A · {c} episodios',
-          note:'Se registran los episodios que alcanzan el {x} % de nivel o superan {a} A de pico. Los saltos siempre se conservan.',
+          cfgLabel:'Registrar desde nivel',cfgOr:'o pico',save:'Guardar',saved:'Guardado ✓',tripsKept:'Los saltos siempre se conservan.',
           noclock:'sin reloj',err:'Error al cargar el registro.'},
       en:{title:'ICP overload history',back:'← Back',refresh:'Refresh',
           thTime:'Date & time',thDur:'Duration',thPeak:'Peak',thLevel:'Max level',thState:'State',
           trip:'TRIP',empty:'No episodes recorded.',
           sub:'Nominal {n} A · recorded from {u} A · {c} episodes',
-          note:'Episodes are recorded when they reach {x} % level or peak above {a} A. Trips are always kept.',
+          cfgLabel:'Log from level',cfgOr:'or peak',save:'Save',saved:'Saved ✓',tripsKept:'Trips are always kept.',
           noclock:'no clock',err:'Failed to load the log.'}
     };
     var L=T[LANG]||T.es;
@@ -997,12 +997,29 @@ const char ICPLOG_html[] PROGMEM = R"rawliteral(
         .replace('{u}',num(j.umbral_registro_a).toFixed(2))
         .replace('{c}',ev.length);
       var nt=document.getElementById('note');
-      if(j&&j.umbral_nivel!==undefined){nt.textContent=L.note.replace('{x}',j.umbral_nivel).replace('{a}',(j.umbral_amp!==undefined?j.umbral_amp:'?'));nt.style.display='';}
+      if(j&&j.umbral_nivel!==undefined){
+        var am=(j.umbral_amp!==undefined?j.umbral_amp:0);
+        nt.innerHTML=L.cfgLabel
+          +' <input id="cfgN" type="number" min="0" max="100" step="1" value="'+j.umbral_nivel+'" style="width:50px">%'
+          +' '+L.cfgOr+' <input id="cfgA" type="number" min="0" max="100" step="0.5" value="'+am+'" style="width:58px">A'
+          +' <button type="button" onclick="saveCfg()" style="margin-left:5px;background:#1e90ff;color:#fff;border:none;border-radius:6px;padding:3px 11px;cursor:pointer;font-size:.86em">'+L.save+'</button>'
+          +' <span id="cfgMsg" style="color:#2b7a2b;font-weight:600"></span><br>'+L.tripsKept;
+        nt.style.display='';
+      }
       else{nt.style.display='none';}
       if(!ev.length){document.getElementById('content').innerHTML='<div class="empty">'+L.empty+'</div>';return;}
       draw();
     }
     function showErr(){document.getElementById('content').innerHTML='<div class="empty">'+L.err+'</div>';}
+    window.saveCfg=function(){
+      var n=document.getElementById('cfgN').value, a=document.getElementById('cfgA').value;
+      var m=document.getElementById('cfgMsg'); if(m)m.textContent='…';
+      fetch('/save_icp_log_cfg',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body:'nivel='+encodeURIComponent(n)+'&amp='+encodeURIComponent(a)})
+        .then(function(r){return r.json();})
+        .then(function(){ if(m)m.textContent=L.saved; setTimeout(load,700); })
+        .catch(function(){ if(m)m.textContent='!'; });
+    };
     function load(){
       document.getElementById('content').innerHTML='<div class="empty">&hellip;</div>';
       fetch('/json_icp_log',{cache:'no-store'}).then(function(r){return r.json();}).then(render).catch(showErr);
@@ -2261,16 +2278,23 @@ void recoverICP() {
     icpRecuperado = true;
     logMessage(String(F("[ICP-RECOVER] Recovered to ")) + String(icpCarga, 2) + F("%"));
 
-    // Forensic marker: the device sits behind the breaker, so a trip takes it
-    // down too. Coming back with a hot retained state that was published only
-    // seconds ago is the signature of a trip (or of a mains cut with the house
-    // loaded) — exactly the event that would pin down the real curve, so it is
-    // recorded rather than lost. Flagged as probable, never as certain.
-    // Test the RECOVERED retained value, not icpCarga: since cfc6931, computeICP() has
-    // already seeded icpCarga from the CURRENT boot load (~50 % at just ~19 A), which
-    // would mark an ordinary under-load reboot as a probable trip and corrupt the
-    // forensic calibration log. The trip signature is a hot RETAINED state == `adjusted`.
-    if (adjusted >= 50.0f && secs > 0 && secs <= 180) {
+    // Forensic marker for a trip that killed the device (behind the breaker, a
+    // trip takes it down too, so there is no current to observe — only the hot
+    // retained state from before). A REAL trip means the thermal model reached its
+    // 100 % trip point AND the current was actually trip-capable. The old
+    // `adjusted >= 50` fired on ordinary reboots with a merely warm state (e.g. a
+    // 17-19 A load recovered at 66-73 %), recording bogus "trips". Require both a
+    // near-100 % level and a trip-capable current so only a genuine trip qualifies.
+    float kTrip = config.icpK;
+    if (isnan(kTrip) || kTrip < MIN_ICP_K) kTrip = MIN_ICP_K;
+    if (kTrip > MAX_ICP_K) kTrip = MAX_ICP_K;
+    float tripMinA = ((kTrip < ICP_NEVER_TRIP_MULT) ? kTrip : ICP_NEVER_TRIP_MULT) * config.icpNominal;
+    // Only a COLD boot (power was actually lost) can be a trip: a trip/mains cut
+    // powers the device off, so it comes back with reason "power on". An OTA update
+    // or any reboot is a SOFT restart (ESP.restart) and is never a trip. This alone
+    // stops reboots being logged as trips; the level/current bars below still gate.
+    bool coldBoot = (ESP.getResetInfoPtr()->reason == REASON_DEFAULT_RST);
+    if (coldBoot && adjusted >= 90.0f && iRecibidoMQTT >= tripMinA && secs > 0 && secs <= 180) {
       icpLogAppend((uint32_t)tsRecibidoMQTT, (uint16_t)secs, iRecibidoMQTT,
                    (uint8_t)(icpRecibidoMQTT + 0.5f), ICP_EV_TRIPPED);
       logMessage(String(F("[ICP-LOG] Probable trip recorded: ")) + String(iRecibidoMQTT, 2) +
@@ -2512,6 +2536,38 @@ static void fsLogMigrateFromEeprom() {
   for (uint8_t i = 0; i < config.icpLogCount && i < MAX_ICP_EVENTS; i++) { icpEventPack(config.icpLog[i], b); f.write(b, ICP_REC_SIZE); n++; }
   f.close();
   logMessage(String(F("[ICP-LOG] Migrated ")) + String(n) + F(" events to LittleFS."));
+}
+
+// Removes forensic records flagged as trips that could not have been real trips:
+// a genuine trip reaches ~100 % thermal AND a trip-capable current. This cleans
+// out the bogus "probable trips" the old reboot heuristic recorded. Rewrites the
+// file only when it actually drops something.
+static void fsLogPurgeFalseTrips() {
+  File f = LittleFS.open(ICP_LOG_FILE, "r");
+  if (!f) return;
+  float kTrip = config.icpK;
+  if (isnan(kTrip) || kTrip < MIN_ICP_K) kTrip = MIN_ICP_K;
+  if (kTrip > MAX_ICP_K) kTrip = MAX_ICP_K;
+  float tripMinA = ((kTrip < ICP_NEVER_TRIP_MULT) ? kTrip : ICP_NEVER_TRIP_MULT) * config.icpNominal;
+  File t = LittleFS.open("/icplog.tmp", "w");
+  if (!t) { f.close(); return; }
+  uint8_t b[ICP_REC_SIZE];
+  bool removed = false;
+  uint16_t kept = 0;
+  while (f.read(b, ICP_REC_SIZE) == (int)ICP_REC_SIZE) {
+    IcpEvent e; icpEventUnpack(b, e);
+    bool fake = (e.flags & ICP_EV_TRIPPED) && (e.nivelMax < 90 || (e.iMaxCa / 100.0f) < tripMinA);
+    if (fake) { removed = true; continue; }
+    t.write(b, ICP_REC_SIZE); kept++;
+  }
+  f.close(); t.close();
+  if (removed) {
+    LittleFS.remove(ICP_LOG_FILE);
+    LittleFS.rename("/icplog.tmp", ICP_LOG_FILE);
+    logMessage(String(F("[ICP-LOG] Purged false trips; ")) + String(kept) + F(" events kept."));
+  } else {
+    LittleFS.remove("/icplog.tmp");
+  }
 }
 
 // Records one episode: append to the FS log and mirror it to MQTT (subscribers
@@ -4463,6 +4519,26 @@ void handleImport() {
   server.send(200, "application/json", "{\"ok\":true}");
 }
 
+// --- /save_icp_log_cfg (POST) --- lets the ICP-log page edit the two record
+// thresholds (danger % and peak A) in place. Form-encoded nivel= and amp=.
+void handleSaveIcpLogCfg() {
+  if (server.method() != HTTP_POST) { server.send(405, "application/json", "{\"ok\":false}"); return; }
+  if (server.hasArg("nivel")) {
+    int lv = server.arg("nivel").toInt();
+    if (lv < MIN_ICP_LOG_NIVEL) lv = MIN_ICP_LOG_NIVEL;
+    if (lv > MAX_ICP_LOG_NIVEL) lv = MAX_ICP_LOG_NIVEL;
+    config.icpLogMinNivel = (uint8_t)lv;
+  }
+  if (server.hasArg("amp")) {
+    float la = server.arg("amp").toFloat();
+    if (isnan(la) || la < MIN_ICP_LOG_AMP) la = MIN_ICP_LOG_AMP;
+    if (la > MAX_ICP_LOG_AMP) la = MAX_ICP_LOG_AMP;
+    config.icpLogMinAmp = la;
+  }
+  saveConfig();
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
 void setupWeb() {
   // Capture Content-Type so the rule endpoints can enforce application/json
   // (CSRF guard). ESP8266WebServer otherwise discards request headers.
@@ -4479,6 +4555,7 @@ void setupWeb() {
   server.on("/json_icp_log", handleJsonIcpLog);
   server.on("/icp_log", handleIcpLog);
   server.on("/consumos", handleConsumoPage);   // pretty energy-usage page
+  server.on("/save_icp_log_cfg", HTTP_POST, handleSaveIcpLogCfg);   // edit log thresholds from /icp_log
   server.on("/fsinfo", handleFsInfo);   // flash/FS diagnostic
   server.on("/export", handleExport);   // whole-device backup (JSON)
   server.on("/import", HTTP_POST, handleImport);  // restore a backup
@@ -4694,6 +4771,7 @@ void setupHardware() {
   if (LittleFS.begin()) {
     logMessage(F("[FS] LittleFS mounted"));
     fsLogMigrateFromEeprom();   // one-time: seed the FS forensic log from the EEPROM ring
+    fsLogPurgeFalseTrips();     // clean out bogus "probable trips" from the old heuristic
     fsEnergyMonthlyMigrate();   // one-time: seed the FS monthly history from the EEPROM ring
     rulesLoad();                // load rules from the FS file (migrating from EEPROM once)
   } else {
