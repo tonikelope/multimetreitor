@@ -290,6 +290,9 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
             </table>
             <button type="button" onclick="restaurarCurva()" class="icp-curve-box-btn" style="background:#2b4;margin-top:13px;" data-i18n="restoreDefaults">Restaurar valores por defecto</button>
           </div>
+          <div class="icp-row" style="margin-top:10px;">
+            <a href="/icp_log" target="_blank" style="color:#1e90ff;text-decoration:none;font-weight:bold;" data-i18n="viewIcpLog">Ver historial de sobrecargas</a>
+          </div>
         </div>
         <div class="consumo-row">
           <label><input type='checkbox' name='consumoEnabled' %CONSUMO_ENABLED%> <span data-i18n="currentPowerAlert">Alerta por <b>corriente/potencia</b></span></label>
@@ -362,7 +365,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         overvoltageAlert:"Alerta por <b>sobretensión</b>", undervoltageAlert:"Alerta por <b>subtensión</b>",
         selectMetrics:"Selecciona qué métricas quieres mostrar en pantalla:", voltage:"Voltaje",
         frequency:"Frecuencia", current:"Corriente", power:"Potencia", energy:"Energía",
-        powerFactor:"Factor Potencia", icp:"ICP", viewHistory:"Ver Historial de Consumo",
+        powerFactor:"Factor Potencia", icp:"ICP", viewHistory:"Ver Historial de Consumo", viewIcpLog:"Ver historial de sobrecargas",
         countingSince:"Contando energía desde hace:", wipeMemory:"Borrar memoria", resetDeviceBtn:"Resetear dispositivo",
         saveChanges:"Guardar cambios", connected:"(CONECTADO)", disconnected:"(NO CONECTADO)",
         confirmWipe:"¿Seguro que quieres borrar por completo la EEPROM?\nEsto restaurará todos los valores de fábrica y perderás la configuración.",
@@ -396,7 +399,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         overvoltageAlert:"<b>Overvoltage</b> alert", undervoltageAlert:"<b>Undervoltage</b> alert",
         selectMetrics:"Select which metrics to show on the display:", voltage:"Voltage",
         frequency:"Frequency", current:"Current", power:"Power", energy:"Energy",
-        powerFactor:"Power Factor", icp:"ICP", viewHistory:"View Consumption History",
+        powerFactor:"Power Factor", icp:"ICP", viewHistory:"View Consumption History", viewIcpLog:"View overload history",
         countingSince:"Counting energy since:", wipeMemory:"Wipe memory", resetDeviceBtn:"Reset device",
         saveChanges:"Save changes", connected:"(CONNECTED)", disconnected:"(NOT CONNECTED)",
         confirmWipe:"Are you sure you want to completely wipe the EEPROM?\nThis will restore all factory defaults and you will lose the configuration.",
@@ -861,6 +864,114 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
     document.addEventListener('DOMContentLoaded', rulesLoad);
     };
     rulesEditorInit();
+  </script>
+</body>
+</html>
+)rawliteral";
+
+// ICP overload-history viewer. Static except for %LANG% (expanded by the shared
+// template streamer); the table is built in the browser from /json_icp_log, so
+// nothing here runs on the measurement path.
+const char ICPLOG_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset='utf-8'>
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+  <title>ICP LOG</title>
+  <style>
+    *{box-sizing:border-box;}
+    body{font-family:'Segoe UI',system-ui,Arial,sans-serif;background:#eef3e6;color:#223;margin:0;padding:18px;}
+    .wrap{max-width:840px;margin:0 auto;}
+    .top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+    h1{font-size:1.32em;color:#337;margin:0;}
+    a.back{display:inline-block;color:#1e90ff;text-decoration:none;font-weight:bold;font-size:0.95em;margin:8px 0 2px 0;}
+    button.refresh{background:#1e90ff;color:#fff;border:none;border-radius:7px;padding:7px 16px;cursor:pointer;font-size:0.9em;}
+    button.refresh:active{transform:translateY(1px);}
+    .sub{color:#678;font-size:0.9em;margin:2px 0 14px 0;}
+    .card{background:#fff;border:1px solid #bbf780;border-radius:13px;padding:4px 6px;box-shadow:0 2px 12px #0001;overflow-x:auto;}
+    table{width:100%;border-collapse:collapse;font-size:0.95em;}
+    th{background:#f7ffd7;color:#2b4;text-align:left;padding:10px 11px;font-weight:700;border-bottom:2px solid #bbf780;white-space:nowrap;}
+    td{padding:10px 11px;border-bottom:1px solid #eef2ea;vertical-align:middle;white-space:nowrap;}
+    tr:last-child td{border-bottom:none;}
+    tbody tr.trip{background:#fff3f3;}
+    tbody tr:hover{background:#fbfff2;}
+    tbody tr.trip:hover{background:#ffecec;}
+    .peak{font-variant-numeric:tabular-nums;font-weight:600;}
+    .bar{display:flex;align-items:center;gap:9px;min-width:130px;}
+    .track{flex:1;height:9px;background:#e9eef0;border-radius:6px;overflow:hidden;}
+    .fill{height:100%;border-radius:6px;transition:width .3s;}
+    .lvl{font-variant-numeric:tabular-nums;color:#556;width:40px;text-align:right;}
+    .badge{display:inline-block;background:#e23;color:#fff;border-radius:20px;padding:2px 11px;font-size:0.8em;font-weight:700;letter-spacing:0.5px;}
+    .dash{color:#9ab;}
+    .empty{text-align:center;color:#789;padding:34px 10px;font-size:1.02em;}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <h1 id="title">Historial de sobrecargas ICP</h1>
+      <button class="refresh" id="refresh" onclick="load()">Actualizar</button>
+    </div>
+    <a class="back" id="back" href="/">&larr; Volver</a>
+    <p class="sub" id="sub"></p>
+    <div class="card"><div id="content"><div class="empty">&hellip;</div></div></div>
+  </div>
+  <script>
+    var LANG='%LANG%';
+    var T={
+      es:{title:'Historial de sobrecargas ICP',back:'← Volver',refresh:'Actualizar',
+          thTime:'Fecha y hora',thDur:'Duración',thPeak:'Pico',thLevel:'Nivel máx.',thState:'Estado',
+          trip:'SALTO',empty:'No hay episodios registrados.',
+          sub:'Nominal {n} A · se registra desde {u} A · {c} episodios',
+          noclock:'sin reloj',err:'Error al cargar el registro.'},
+      en:{title:'ICP overload history',back:'← Back',refresh:'Refresh',
+          thTime:'Date & time',thDur:'Duration',thPeak:'Peak',thLevel:'Max level',thState:'State',
+          trip:'TRIP',empty:'No episodes recorded.',
+          sub:'Nominal {n} A · recorded from {u} A · {c} episodes',
+          noclock:'no clock',err:'Failed to load the log.'}
+    };
+    var L=T[LANG]||T.es;
+    function pad2(n){return (n<10?'0':'')+n;}
+    function fmtDur(s){if(s<60)return s+'s';var m=Math.floor(s/60);return m+'m'+pad2(s%60)+'s';}
+    function fmtTime(ts){if(!ts)return '<span class="dash">'+L.noclock+'</span>';
+      var d=new Date(ts*1000);return d.toLocaleString(LANG==='es'?'es-ES':'en-GB');}
+    function fillColor(n){var h=Math.round(120-1.2*n);if(h<0)h=0;return 'hsl('+h+',72%,45%)';}
+    function num(x){return (typeof x==='number'&&isFinite(x))?x:0;}
+    function applyStatic(){
+      document.getElementById('title').textContent=L.title;
+      document.getElementById('back').textContent=L.back;
+      document.getElementById('refresh').textContent=L.refresh;
+    }
+    function render(j){
+      var ev=(j&&j.eventos)?j.eventos:[];
+      document.getElementById('sub').textContent=L.sub
+        .replace('{n}',num(j.nominal).toFixed(0))
+        .replace('{u}',num(j.umbral_registro_a).toFixed(2))
+        .replace('{c}',ev.length);
+      if(!ev.length){document.getElementById('content').innerHTML='<div class="empty">'+L.empty+'</div>';return;}
+      var h='<table><thead><tr>'
+        +'<th>'+L.thTime+'</th><th>'+L.thDur+'</th><th>'+L.thPeak+'</th><th>'+L.thLevel+'</th><th>'+L.thState+'</th>'
+        +'</tr></thead><tbody>';
+      ev.forEach(function(e){
+        var trip=!!e.disparo, n=num(e.nivel_max);
+        h+='<tr class="'+(trip?'trip':'')+'">'
+          +'<td>'+fmtTime(e.ts)+'</td>'
+          +'<td>'+fmtDur(num(e.dur_s))+'</td>'
+          +'<td class="peak">'+num(e.i_max_a).toFixed(2)+' A</td>'
+          +'<td><div class="bar"><div class="track"><div class="fill" style="width:'+n+'%;background:'+fillColor(n)+'"></div></div><span class="lvl">'+n+'%</span></div></td>'
+          +'<td>'+(trip?'<span class="badge">'+L.trip+'</span>':'<span class="dash">&mdash;</span>')+'</td>'
+          +'</tr>';
+      });
+      h+='</tbody></table>';
+      document.getElementById('content').innerHTML=h;
+    }
+    function showErr(){document.getElementById('content').innerHTML='<div class="empty">'+L.err+'</div>';}
+    function load(){
+      document.getElementById('content').innerHTML='<div class="empty">&hellip;</div>';
+      fetch('/json_icp_log',{cache:'no-store'}).then(function(r){return r.json();}).then(render).catch(showErr);
+    }
+    applyStatic();load();
   </script>
 </body>
 </html>
@@ -3138,14 +3249,11 @@ static bool configTokenValue(const char* tok, char* out, size_t n) {
   return true;
 }
 
-void handleConfigForm() {
-  // Never cache the form: after an OTA that renames form fields, a browser
-  // serving the previous page would post the old names and silently drop the
-  // new ones, so the user would think a setting was saved when it was not.
-  server.sendHeader("Cache-Control", "no-store");
-  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
-  server.send(200, "text/html; charset=utf-8", "");
-
+// Streams a PROGMEM HTML template to the client, expanding every %TOKEN% through
+// configTokenValue(). Shared by the config form and the ICP-log page so both
+// substitute identically (e.g. %LANG%). Assumes the caller already sent the
+// response head with CONTENT_LENGTH_UNKNOWN.
+static void streamHtmlTemplate(PGM_P html) {
   // Transient heap accumulator (2 full TCP segments per chunk minimizes
   // ACK round-trips). 2.9KB for one request vs the old permanent ~22KB String.
   const size_t BUF_SZ = 2920;
@@ -3155,7 +3263,7 @@ void handleConfigForm() {
   auto flush = [&]() { if (bn) { server.sendContent(buf, bn); bn = 0; } };
   auto put = [&](char c) { buf[bn++] = c; if (bn == BUF_SZ) flush(); };
 
-  PGM_P p = MAIN_html;
+  PGM_P p = html;
   char c;
   while ((c = (char)pgm_read_byte(p)) != 0) {
     if (c == '%') {
@@ -3182,6 +3290,26 @@ void handleConfigForm() {
   }
   flush();
   // _finalizeResponse() in the web server sends the terminating chunk.
+}
+
+void handleConfigForm() {
+  // Never cache the form: after an OTA that renames form fields, a browser
+  // serving the previous page would post the old names and silently drop the
+  // new ones, so the user would think a setting was saved when it was not.
+  server.sendHeader("Cache-Control", "no-store");
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "text/html; charset=utf-8", "");
+  streamHtmlTemplate(MAIN_html);
+}
+
+// Renders the ICP overload-history viewer. The page is static except for %LANG%;
+// it fetches /json_icp_log client-side and builds the table in the browser, so
+// this handler stays off the hot path and out of EEPROM.
+void handleIcpLog() {
+  server.sendHeader("Cache-Control", "no-store");
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "text/html; charset=utf-8", "");
+  streamHtmlTemplate(ICPLOG_html);
 }
 
 void handleReset() {
@@ -3675,6 +3803,7 @@ void setupWeb() {
   server.on("/json_lcd", handleJsonLCD);
   server.on("/json_alerts", handleJsonAlerts);
   server.on("/json_icp_log", handleJsonIcpLog);
+  server.on("/icp_log", handleIcpLog);
   server.on("/json_rules", handleJsonRules);
   server.on("/save_rules", HTTP_POST, handleSaveRules);
   server.on("/rule_test", HTTP_POST, handleRuleTest);
