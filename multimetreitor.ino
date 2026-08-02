@@ -2290,45 +2290,78 @@ float icpNivelPeligro() {
   return icpBarra;
 }
 
-// Appends one episode to the forensic ring buffer. Not saved to EEPROM here:
-// the caller decides, so a burst of episodes cannot hammer the flash.
-static void icpLogAppend(uint32_t ts, uint16_t durSec, float iMax, uint8_t nivelMax, uint8_t flags) {
-  // Pick the slot. While the ring is filling, append sequentially. Once full,
-  // evict the OLDEST LOW-PRIORITY episode rather than the strict-oldest, so a
-  // probable trip is never lost to a later burst of minor spikes: prefer the
-  // oldest non-trip; only if every slot is a trip do we sacrifice the oldest trip.
-  // Slot order is therefore no longer chronological, but every event carries its
-  // own ts and both the JSON reader's consumers and the viewer sort by it.
-  uint8_t slot;
-  if (config.icpLogCount < MAX_ICP_EVENTS) {
-    slot = config.icpLogCount;
-    config.icpLogCount++;
-  } else {
-    slot = 0xFF;
-    uint32_t oldest = 0xFFFFFFFFUL;
-    for (uint8_t i = 0; i < MAX_ICP_EVENTS; i++) {
-      if (config.icpLog[i].flags & ICP_EV_TRIPPED) continue;   // protect trips
-      if (config.icpLog[i].ts <= oldest) { oldest = config.icpLog[i].ts; slot = i; }
-    }
-    if (slot == 0xFF) {   // every slot is a trip: sacrifice the oldest trip
-      oldest = 0xFFFFFFFFUL;
-      for (uint8_t i = 0; i < MAX_ICP_EVENTS; i++) {
-        if (config.icpLog[i].ts <= oldest) { oldest = config.icpLog[i].ts; slot = i; }
-      }
-    }
-  }
-  config.icpLogIndex = (uint8_t)((slot + 1) % MAX_ICP_EVENTS);  // kept in range; order is by ts now
+// ---- Forensic log storage: a LittleFS file, not the old 12-slot EEPROM ring ----
+// Append-only binary file of fixed 10-byte records (fields written explicitly, so
+// the format does not depend on struct padding). ~2 MB of FS holds effectively
+// unlimited episodes; a soft cap rotates the very oldest away. The EEPROM ring
+// fields (config.icpLog*) are now frozen — kept only to seed the file once and
+// removed in the later EEPROM cleanup.
+#define ICP_LOG_FILE "/icplog.bin"
+static const size_t   ICP_REC_SIZE    = 10;
+static const uint32_t ICP_LOG_FS_CAP  = 5000;   // records kept in the file (~50 KB)
+static const uint32_t ICP_LOG_JSON_MAX = 1000;  // most-recent records returned by /json_icp_log
 
-  IcpEvent &e = config.icpLog[slot];
+static void icpEventPack(const IcpEvent &e, uint8_t *b) {
+  memcpy(b + 0, &e.ts, 4); memcpy(b + 4, &e.durSec, 2); memcpy(b + 6, &e.iMaxCa, 2);
+  b[8] = e.nivelMax; b[9] = e.flags;
+}
+static void icpEventUnpack(const uint8_t *b, IcpEvent &e) {
+  memcpy(&e.ts, b + 0, 4); memcpy(&e.durSec, b + 4, 2); memcpy(&e.iMaxCa, b + 6, 2);
+  e.nivelMax = b[8]; e.flags = b[9];
+}
+
+// Trim the file to the newest ICP_LOG_FS_CAP records. Rare (only when an append
+// pushes it over the cap), so the rewrite cost is not on the per-append path.
+static void fsLogRotate() {
+  File f = LittleFS.open(ICP_LOG_FILE, "r");
+  if (!f) return;
+  uint32_t total = (uint32_t)(f.size() / ICP_REC_SIZE);
+  if (total <= ICP_LOG_FS_CAP) { f.close(); return; }
+  f.seek((total - ICP_LOG_FS_CAP) * ICP_REC_SIZE, SeekSet);
+  File t = LittleFS.open("/icplog.tmp", "w");
+  if (!t) { f.close(); return; }
+  uint8_t b[ICP_REC_SIZE];
+  while (f.read(b, ICP_REC_SIZE) == (int)ICP_REC_SIZE) t.write(b, ICP_REC_SIZE);
+  f.close(); t.close();
+  LittleFS.remove(ICP_LOG_FILE);
+  LittleFS.rename("/icplog.tmp", ICP_LOG_FILE);
+}
+
+static void fsLogAppend(const IcpEvent &e) {
+  File f = LittleFS.open(ICP_LOG_FILE, "a");
+  if (!f) return;
+  uint8_t b[ICP_REC_SIZE];
+  icpEventPack(e, b);
+  f.write(b, ICP_REC_SIZE);
+  f.close();
+  fsLogRotate();
+}
+
+// One-time seed of the FS log from the legacy EEPROM ring, so the migration keeps
+// the episodes already recorded. Runs only when the file does not yet exist.
+static void fsLogMigrateFromEeprom() {
+  if (LittleFS.exists(ICP_LOG_FILE)) return;
+  File f = LittleFS.open(ICP_LOG_FILE, "w");
+  if (!f) return;
+  uint8_t b[ICP_REC_SIZE];
+  uint8_t n = 0;
+  for (uint8_t i = 0; i < config.icpLogCount && i < MAX_ICP_EVENTS; i++) { icpEventPack(config.icpLog[i], b); f.write(b, ICP_REC_SIZE); n++; }
+  f.close();
+  logMessage(String(F("[ICP-LOG] Migrated ")) + String(n) + F(" events to LittleFS."));
+}
+
+// Records one episode: append to the FS log and mirror it to MQTT (subscribers
+// can archive without limit). No EEPROM write — the file persists it immediately.
+static void icpLogAppend(uint32_t ts, uint16_t durSec, float iMax, uint8_t nivelMax, uint8_t flags) {
+  IcpEvent e;
   e.ts = ts;
   e.durSec = durSec;
   float ca = iMax * 100.0f;
   e.iMaxCa = (isnan(ca) || ca < 0) ? 0 : (ca > 65535.0f ? 65535 : (uint16_t)ca);
   e.nivelMax = nivelMax > 100 ? 100 : nivelMax;
   e.flags = flags;
+  fsLogAppend(e);
 
-  // Also publish it: the ring only holds MAX_ICP_EVENTS, while anything
-  // subscribed to this topic can archive them without limit.
   if (mqttClient.connected()) {
     char payload[160];
     int m = snprintf(payload, sizeof(payload),
@@ -2412,7 +2445,6 @@ void icpLogUpdate() {
     icpLogAppend(startTs, durS > 65535 ? 65535 : (uint16_t)durS, iMax, nivelMax, 0);
     logMessage(String(F("[ICP-LOG] Episode: ")) + String(iMax, 2) + F(" A max, ") +
                String(durS) + F(" s, level ") + String(nivelMax) + F("%"));
-    safeBackgroundSaveConfig();
   } else {
     logMessage(String(F("[ICP-LOG] Episode not stored (below thresholds): ")) +
                String(iMax, 2) + F(" A, ") + String(durS) + F(" s, ") + String(nivelMax) + F("%"));
@@ -3671,17 +3703,26 @@ void handleJsonIcpLog() {
            config.icpLogMinNivel, (double)config.icpLogMinAmp);
   server.sendContent(buf);
 
-  // Walk the ring backwards from the most recent slot.
-  for (uint8_t n = 0; n < config.icpLogCount; n++) {
-    uint8_t idx = (uint8_t)((config.icpLogIndex + MAX_ICP_EVENTS - 1 - n) % MAX_ICP_EVENTS);
-    const IcpEvent &e = config.icpLog[idx];
+  // Stream from the LittleFS log file: the most-recent ICP_LOG_JSON_MAX records in
+  // file order (chronological). The viewer sorts by ts, so file order is enough.
+  File f = LittleFS.open(ICP_LOG_FILE, "r");
+  uint32_t total = f ? (uint32_t)(f.size() / ICP_REC_SIZE) : 0;
+  uint32_t start = (total > ICP_LOG_JSON_MAX) ? (total - ICP_LOG_JSON_MAX) : 0;
+  if (f) f.seek(start * ICP_REC_SIZE, SeekSet);
+  bool first = true;
+  uint8_t rb[ICP_REC_SIZE];
+  while (f && f.read(rb, ICP_REC_SIZE) == (int)ICP_REC_SIZE) {
+    IcpEvent e;
+    icpEventUnpack(rb, e);
     snprintf(buf, sizeof(buf),
              "%s{\"ts\":%lu,\"dur_s\":%u,\"i_max_a\":%.2f,\"nivel_max\":%u,\"disparo\":%s}",
-             n ? "," : "", (unsigned long)e.ts, (unsigned)e.durSec,
+             first ? "" : ",", (unsigned long)e.ts, (unsigned)e.durSec,
              (double)e.iMaxCa / 100.0, (unsigned)e.nivelMax,
              (e.flags & ICP_EV_TRIPPED) ? "true" : "false");
     server.sendContent(buf);
+    first = false;
   }
+  if (f) f.close();
   server.sendContent("]}");
   server.sendContent("");
 }
@@ -4002,18 +4043,10 @@ void handleExport() {
     }
     server.sendContent("]}");
   }
-  server.sendContent("],");
-
-  snprintf(buf, sizeof(buf), "\"icp_log\":{\"index\":%u,\"count\":%u,\"events\":[",
-           config.icpLogIndex, config.icpLogCount);
-  server.sendContent(buf);
-  for (uint8_t n = 0; n < config.icpLogCount && n < MAX_ICP_EVENTS; n++) {
-    const IcpEvent &ev = config.icpLog[n];
-    snprintf(buf, sizeof(buf), "%s{\"ts\":%lu,\"dur\":%u,\"iMaxCa\":%u,\"nivel\":%u,\"flags\":%u}",
-             n ? "," : "", (unsigned long)ev.ts, ev.durSec, ev.iMaxCa, ev.nivelMax, ev.flags);
-    server.sendContent(buf);
-  }
-  server.sendContent("]}}");
+  // The forensic log is NOT part of the backup: it now lives in its own LittleFS
+  // file (device telemetry, not config), so a config backup neither carries nor
+  // restores it. Close the rules array and the root object.
+  server.sendContent("]}");
   server.sendContent("");
 }
 
@@ -4115,17 +4148,8 @@ void handleImport() {
     }
   }
 
-  JsonObject lg = doc["icp_log"];
-  if (!lg.isNull()) {
-    JsonArray evs = lg["events"];
-    if (!evs.isNull()) {
-      memset(config.icpLog, 0, sizeof(config.icpLog));
-      int i = 0;
-      for (JsonObject ev : evs) { if (i >= MAX_ICP_EVENTS) break; config.icpLog[i].ts = ev["ts"] | 0UL; config.icpLog[i].durSec = ev["dur"] | 0; config.icpLog[i].iMaxCa = ev["iMaxCa"] | 0; uint8_t nv = ev["nivel"] | 0; config.icpLog[i].nivelMax = nv > 100 ? 100 : nv; config.icpLog[i].flags = ev["flags"] | 0; i++; }
-      config.icpLogCount = (uint8_t)i;
-      config.icpLogIndex = (uint8_t)((lg["index"] | i) % MAX_ICP_EVENTS);
-    }
-  }
+  // The forensic log is not part of the backup (it lives in its own LittleFS
+  // file), so there is nothing to restore here.
 
   // Re-assert every magic so the imported blocks are trusted on the next boot.
   config.magic = CONFIG_MAGIC;
@@ -4292,8 +4316,12 @@ void setupHardware() {
   // Flash filesystem (~2 MB on the 4M2M layout): home for the data that outgrows
   // the 4 KB EEPROM sector (forensic log, energy history, rules). begin() mounts,
   // formatting on first use. Non-fatal on failure: the EEPROM config still works.
-  if (LittleFS.begin()) logMessage(F("[FS] LittleFS mounted"));
-  else                  logMessage(F("[FS] LittleFS mount FAILED"));
+  if (LittleFS.begin()) {
+    logMessage(F("[FS] LittleFS mounted"));
+    fsLogMigrateFromEeprom();   // one-time: seed the FS forensic log from the EEPROM ring
+  } else {
+    logMessage(F("[FS] LittleFS mount FAILED"));
+  }
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
 }
