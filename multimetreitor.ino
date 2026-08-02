@@ -291,6 +291,12 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
             </table>
             <button type="button" onclick="restaurarCurva()" class="icp-curve-box-btn" style="background:#2b4;margin-top:13px;" data-i18n="restoreDefaults">Restaurar valores por defecto</button>
           </div>
+          <div class="icp-row">
+            <span data-i18n="logFromLevel">Registrar en log desde nivel:</span>
+            <input type="number" min="0" max="100" step="1" name="icpLogNivel" value="%ICP_LOG_NIVEL%" style="width:64px;"> %
+            &nbsp; <span data-i18n="logOrAmp">o corriente:</span>
+            <input type="number" min="0" max="100" step="0.5" name="icpLogAmp" value="%ICP_LOG_AMP%" style="width:64px;"> A
+          </div>
           <div class="icp-row" style="margin-top:10px;">
             <a href="/icp_log" target="_blank" style="color:#1e90ff;text-decoration:none;font-weight:bold;" data-i18n="viewIcpLog">Ver historial de sobrecargas</a>
           </div>
@@ -367,6 +373,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         selectMetrics:"Selecciona qué métricas quieres mostrar en pantalla:", voltage:"Voltaje",
         frequency:"Frecuencia", current:"Corriente", power:"Potencia", energy:"Energía",
         powerFactor:"Factor Potencia", icp:"ICP", viewHistory:"Ver Historial de Consumo", viewIcpLog:"Ver historial de sobrecargas",
+        logFromLevel:"Registrar en log desde nivel:", logOrAmp:"o corriente:",
         countingSince:"Contando energía desde hace:", wipeMemory:"Borrar memoria", resetDeviceBtn:"Resetear dispositivo",
         saveChanges:"Guardar cambios", connected:"(CONECTADO)", disconnected:"(NO CONECTADO)",
         confirmWipe:"¿Seguro que quieres borrar por completo la EEPROM?\nEsto restaurará todos los valores de fábrica y perderás la configuración.",
@@ -401,6 +408,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         selectMetrics:"Select which metrics to show on the display:", voltage:"Voltage",
         frequency:"Frequency", current:"Current", power:"Power", energy:"Energy",
         powerFactor:"Power Factor", icp:"ICP", viewHistory:"View Consumption History", viewIcpLog:"View overload history",
+        logFromLevel:"Log episodes from level:", logOrAmp:"or current:",
         countingSince:"Counting energy since:", wipeMemory:"Wipe memory", resetDeviceBtn:"Reset device",
         saveChanges:"Save changes", connected:"(CONNECTED)", disconnected:"(NOT CONNECTED)",
         confirmWipe:"Are you sure you want to completely wipe the EEPROM?\nThis will restore all factory defaults and you will lose the configuration.",
@@ -929,13 +937,13 @@ const char ICPLOG_html[] PROGMEM = R"rawliteral(
           thTime:'Fecha y hora',thDur:'Duración',thPeak:'Pico',thLevel:'Nivel máx.',thState:'Estado',
           trip:'SALTO',empty:'No hay episodios registrados.',
           sub:'Nominal {n} A · se registra desde {u} A · {c} episodios',
-          note:'Por falta de espacio solo se registran episodios que alcanzan el {x} % de nivel; los saltos siempre se conservan.',
+          note:'Se registran los episodios que alcanzan el {x} % de nivel o superan {a} A de pico. Los saltos siempre se conservan.',
           noclock:'sin reloj',err:'Error al cargar el registro.'},
       en:{title:'ICP overload history',back:'← Back',refresh:'Refresh',
           thTime:'Date & time',thDur:'Duration',thPeak:'Peak',thLevel:'Max level',thState:'State',
           trip:'TRIP',empty:'No episodes recorded.',
           sub:'Nominal {n} A · recorded from {u} A · {c} episodes',
-          note:'For space, only episodes reaching {x} % level are recorded; trips are always kept.',
+          note:'Episodes are recorded when they reach {x} % level or peak above {a} A. Trips are always kept.',
           noclock:'no clock',err:'Failed to load the log.'}
     };
     var L=T[LANG]||T.es;
@@ -985,7 +993,7 @@ const char ICPLOG_html[] PROGMEM = R"rawliteral(
         .replace('{u}',num(j.umbral_registro_a).toFixed(2))
         .replace('{c}',ev.length);
       var nt=document.getElementById('note');
-      if(j&&j.umbral_nivel!==undefined){nt.textContent=L.note.replace('{x}',j.umbral_nivel);nt.style.display='';}
+      if(j&&j.umbral_nivel!==undefined){nt.textContent=L.note.replace('{x}',j.umbral_nivel).replace('{a}',(j.umbral_amp!==undefined?j.umbral_amp:'?'));nt.style.display='';}
       else{nt.style.display='none';}
       if(!ev.length){document.getElementById('content').innerHTML='<div class="empty">'+L.empty+'</div>';return;}
       draw();
@@ -1140,12 +1148,16 @@ static const float MAX_CONSUMO_VAL = 10000.0f;
 // An episode is closed after this many consecutive readings back below the
 // threshold, so a load that dips for a moment does not split into two.
 #define ICP_LOG_GRACE_SAMPLES 20
-// Minimum peak danger level (%) an episode must reach to earn a slot in the ring.
-// With only MAX_ICP_EVENTS slots, a burst of brief spikes that never built any
-// real heat (nivel ~0 %) would otherwise evict the episodes worth keeping. Trips
-// are exempt (recorded via icpLogAppend directly, never gated) and, once stored,
-// are protected from eviction. Surfaced to the viewer so the UI can state it.
-#define ICP_LOG_MIN_NIVEL 10
+// An episode is recorded when it reaches config.icpLogMinNivel % of danger OR its
+// peak current exceeds config.icpLogMinAmp A (catches brief high-current spikes
+// that never built thermal danger). Both are user-configurable from the web UI;
+// these are the defaults and the accepted ranges. Trips are always recorded
+// (logged from recoverICP, never gated).
+#define DEF_ICP_LOG_MIN_NIVEL 1
+#define DEF_ICP_LOG_MIN_AMP   30.0f
+#define ICP_LOG_CFG_MAGIC     0x4B   // marks the configurable log thresholds
+static const int   MIN_ICP_LOG_NIVEL = 0,  MAX_ICP_LOG_NIVEL = 100;
+static const float MIN_ICP_LOG_AMP   = 0.0f, MAX_ICP_LOG_AMP  = 100.0f;
 
 struct IcpEvent {
   uint32_t ts;        // epoch when the episode started (0 if no valid clock)
@@ -1307,6 +1319,12 @@ struct AppConfig {
   // an older config's garbage here is defaulted rather than trusted.
   uint8_t icpSensibilidad;
   uint8_t icpSensMagic;
+
+  // Configurable forensic-log thresholds, appended after the sensitivity block
+  // (its own magic guard). Nothing before shifts, so every existing offset holds.
+  float   icpLogMinAmp;     // OR peak current (A) to record an episode regardless of nivel
+  uint8_t icpLogMinNivel;   // danger level (%) that records an episode
+  uint8_t icpLogCfgMagic;
 };
 
 // Layout guards: the append-without-version-bump migration is only safe while
@@ -1483,6 +1501,9 @@ void setDefaults() {
   config.icpLogMagic = ICP_LOG_MAGIC;
   config.icpSensibilidad = DEF_ICP_SENS;
   config.icpSensMagic = ICP_SENS_MAGIC;
+  config.icpLogMinAmp = DEF_ICP_LOG_MIN_AMP;
+  config.icpLogMinNivel = DEF_ICP_LOG_MIN_NIVEL;
+  config.icpLogCfgMagic = ICP_LOG_CFG_MAGIC;
 
   config.consumoEnabled = DEF_CONSUMO_ENABLED;
   config.consumoEnAmperios = DEF_CONSUMO_TIPO_A;
@@ -1639,6 +1660,20 @@ void loadConfig() {
     logMessage(F("[ICP] Sensitivity model initialised (k/tau recalibrated)."));
   } else if (config.icpSensibilidad > MAX_ICP_SENS) {
     config.icpSensibilidad = DEF_ICP_SENS;
+  }
+
+  // Configurable log thresholds, appended after the sensitivity block. Older
+  // firmware has garbage here: default it. Nothing before shifts, so the rest of
+  // the config (rules, energy history, calibration) is untouched.
+  if (config.icpLogCfgMagic != ICP_LOG_CFG_MAGIC) {
+    config.icpLogMinAmp = DEF_ICP_LOG_MIN_AMP;
+    config.icpLogMinNivel = DEF_ICP_LOG_MIN_NIVEL;
+    config.icpLogCfgMagic = ICP_LOG_CFG_MAGIC;
+    saveConfig();
+    logMessage(F("[ICP] Log thresholds initialised (nivel/amp)."));
+  } else {
+    if (isnan(config.icpLogMinAmp) || config.icpLogMinAmp < MIN_ICP_LOG_AMP || config.icpLogMinAmp > MAX_ICP_LOG_AMP) config.icpLogMinAmp = DEF_ICP_LOG_MIN_AMP;
+    if (config.icpLogMinNivel > MAX_ICP_LOG_NIVEL) config.icpLogMinNivel = DEF_ICP_LOG_MIN_NIVEL;
   }
 }
 
@@ -2369,18 +2404,18 @@ void icpLogUpdate() {
   unsigned long durS = durMs / 1000UL;
   active = false;
   belowCount = 0;
-  // Only spend a ring slot on episodes that reached a meaningful danger level.
-  // Brief spikes that never built heat (nivel < ICP_LOG_MIN_NIVEL) are dropped so
-  // they cannot evict the episodes worth keeping. Trips never reach here (they are
-  // recorded from recoverICP), so this gate can never drop a trip.
-  if (nivelMax >= ICP_LOG_MIN_NIVEL) {
+  // Record the episode if it reached the configured danger level OR its peak
+  // current crossed the configured amp threshold (catches brief high-current
+  // spikes that never built heat). Trips never reach here (recorded from
+  // recoverICP), so this gate can never drop a trip.
+  if (nivelMax >= config.icpLogMinNivel || iMax > config.icpLogMinAmp) {
     icpLogAppend(startTs, durS > 65535 ? 65535 : (uint16_t)durS, iMax, nivelMax, 0);
     logMessage(String(F("[ICP-LOG] Episode: ")) + String(iMax, 2) + F(" A max, ") +
                String(durS) + F(" s, level ") + String(nivelMax) + F("%"));
     safeBackgroundSaveConfig();
   } else {
-    logMessage(String(F("[ICP-LOG] Episode below ")) + String(ICP_LOG_MIN_NIVEL) +
-               F("% not stored: ") + String(iMax, 2) + F(" A, ") + String(durS) + F(" s"));
+    logMessage(String(F("[ICP-LOG] Episode not stored (below thresholds): ")) +
+               String(iMax, 2) + F(" A, ") + String(durS) + F(" s, ") + String(nivelMax) + F("%"));
   }
 }
 
@@ -3179,6 +3214,18 @@ void handleConfigPost() {
     if (cool > MAX_ICP_COOLDOWN_S) cool = MAX_ICP_COOLDOWN_S;
     config.icpCooldownTime = cool;
   }
+  if (server.hasArg("icpLogNivel")) {
+    int lv = server.arg("icpLogNivel").toInt();
+    if (lv < MIN_ICP_LOG_NIVEL) lv = MIN_ICP_LOG_NIVEL;
+    if (lv > MAX_ICP_LOG_NIVEL) lv = MAX_ICP_LOG_NIVEL;
+    config.icpLogMinNivel = (uint8_t)lv;
+  }
+  if (server.hasArg("icpLogAmp")) {
+    float la = server.arg("icpLogAmp").toFloat();
+    if (isnan(la) || la < MIN_ICP_LOG_AMP) la = MIN_ICP_LOG_AMP;
+    if (la > MAX_ICP_LOG_AMP) la = MAX_ICP_LOG_AMP;
+    config.icpLogMinAmp = la;
+  }
 
   // icpCarga is a percentage of THIS breaker's trip point, so nominal and k
   // define the scale it is measured on. Changing them without rescaling
@@ -3306,6 +3353,8 @@ static bool configTokenValue(const char* tok, char* out, size_t n) {
   else if (!strcmp_P(tok, PSTR("ICP_AVISO")))        snprintf_P(out, n, PSTR("%d"), config.icpAvisoMax);
   else if (!strcmp_P(tok, PSTR("ICP_SENS")))         snprintf_P(out, n, PSTR("%d"), config.icpSensibilidad);
   else if (!strcmp_P(tok, PSTR("COOLDOWN")))         snprintf_P(out, n, PSTR("%d"), config.icpCooldownTime);
+  else if (!strcmp_P(tok, PSTR("ICP_LOG_NIVEL")))    snprintf_P(out, n, PSTR("%u"), config.icpLogMinNivel);
+  else if (!strcmp_P(tok, PSTR("ICP_LOG_AMP")))      snprintf_P(out, n, PSTR("%.1f"), (double)config.icpLogMinAmp);
   else if (!strcmp_P(tok, PSTR("LAST_RESET_TIME")))  formatElapsedTimeTo(out, n, config.lastEnergyReset);
   else if (!strcmp_P(tok, PSTR("LANG")))             { strncpy_P(out, config.lcdLang == LANG_EN ? PSTR("en") : PSTR("es"), n); out[n-1] = '\0'; }
   else return false;
@@ -3617,8 +3666,9 @@ void handleJsonIcpLog() {
   if (kLog > MAX_ICP_K) kLog = MAX_ICP_K;
   float logMult = (kLog < ICP_NEVER_TRIP_MULT) ? kLog : ICP_NEVER_TRIP_MULT;
   snprintf(buf, sizeof(buf),
-           "{\"nominal\":%.2f,\"umbral_registro_a\":%.2f,\"umbral_nivel\":%d,\"eventos\":[",
-           (double)config.icpNominal, (double)(logMult * config.icpNominal), ICP_LOG_MIN_NIVEL);
+           "{\"nominal\":%.2f,\"umbral_registro_a\":%.2f,\"umbral_nivel\":%u,\"umbral_amp\":%.1f,\"eventos\":[",
+           (double)config.icpNominal, (double)(logMult * config.icpNominal),
+           config.icpLogMinNivel, (double)config.icpLogMinAmp);
   server.sendContent(buf);
 
   // Walk the ring backwards from the most recent slot.
@@ -3906,9 +3956,10 @@ void handleExport() {
 
   snprintf(buf, sizeof(buf),
     "\"icp\":{\"enabled\":%s,\"nominal\":%.2f,\"umbral\":%d,\"k\":%.2f,\"tau\":%d,"
-    "\"cooldown\":%d,\"avisoMax\":%d,\"sensibilidad\":%u},",
+    "\"cooldown\":%d,\"avisoMax\":%d,\"sensibilidad\":%u,\"logNivel\":%u,\"logAmp\":%.1f},",
     config.icpEnabled ? "true" : "false", (double)config.icpNominal, config.icpUmbral,
-    (double)config.icpK, config.icpTau, config.icpCooldownTime, config.icpAvisoMax, config.icpSensibilidad);
+    (double)config.icpK, config.icpTau, config.icpCooldownTime, config.icpAvisoMax, config.icpSensibilidad,
+    config.icpLogMinNivel, (double)config.icpLogMinAmp);
   server.sendContent(buf);
 
   snprintf(buf, sizeof(buf),
@@ -4012,6 +4063,8 @@ void handleImport() {
     int cd = ic["cooldown"] | config.icpCooldownTime;       config.icpCooldownTime = cd < MIN_ICP_COOLDOWN_S ? MIN_ICP_COOLDOWN_S : (cd > MAX_ICP_COOLDOWN_S ? MAX_ICP_COOLDOWN_S : cd);
     int av = ic["avisoMax"] | config.icpAvisoMax;           config.icpAvisoMax = av < MIN_ICP_AVISO_S ? MIN_ICP_AVISO_S : (av > MAX_ICP_AVISO_S ? MAX_ICP_AVISO_S : av);
     int se = ic["sensibilidad"] | config.icpSensibilidad;   config.icpSensibilidad = se < 0 ? 0 : (se > MAX_ICP_SENS ? MAX_ICP_SENS : se);
+    int ln = ic["logNivel"] | config.icpLogMinNivel;        config.icpLogMinNivel = ln < MIN_ICP_LOG_NIVEL ? MIN_ICP_LOG_NIVEL : (ln > MAX_ICP_LOG_NIVEL ? MAX_ICP_LOG_NIVEL : ln);
+    float la = ic["logAmp"] | (float)config.icpLogMinAmp;   config.icpLogMinAmp = (isnan(la) || la < MIN_ICP_LOG_AMP) ? MIN_ICP_LOG_AMP : (la > MAX_ICP_LOG_AMP ? MAX_ICP_LOG_AMP : la);
   }
 
   JsonObject en = doc["energy"];
@@ -4081,6 +4134,7 @@ void handleImport() {
   config.icpModelMagic = ICP_MODEL_MAGIC;
   config.icpLogMagic = ICP_LOG_MAGIC;
   config.icpSensMagic = ICP_SENS_MAGIC;
+  config.icpLogCfgMagic = ICP_LOG_CFG_MAGIC;
   saveConfig();
   logMessage(F("[IMPORT] Backup restored."));
   server.send(200, "application/json", "{\"ok\":true}");
