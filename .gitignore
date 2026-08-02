@@ -5,3 +5,6 @@ secrets.h
 build/
 *.bin
 *.elf
+
+# Device backups (/export snapshots — device-specific data, not code)
+backups/
