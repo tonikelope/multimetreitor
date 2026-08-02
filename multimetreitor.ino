@@ -160,6 +160,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
     }
     .rule-card.disabled { border-left-color:#bbb; opacity:0.72; }
     .rule-head { display:flex; align-items:center; gap:9px; flex-wrap:wrap; margin-bottom:9px; }
+    .rule-head .rule-num { flex:0 0 auto; width:23px; height:23px; border-radius:50%; background:#5566a0; color:#fff; font-size:0.82em; font-weight:bold; display:flex; align-items:center; justify-content:center; }
     .rule-head .rname { flex:1 1 130px; min-width:110px; margin-left:0; }
     .rule-head .sw { display:flex; align-items:center; gap:5px; font-size:0.92em; color:#456; }
     .rule-del {
@@ -387,6 +388,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         ruleAnd:"Y (AND)", ruleOr:"O (OR)", ruleThen:"Entonces", ruleActMqtt:"Publicar MQTT", ruleActHook:"Webhook (URL)",
         ruleTopic:"Topic MQTT", ruleUrl:"URL", ruleFire:"Mensaje al activarse", ruleClear:"Mensaje al limpiarse (opcional)",
         ruleBody:"Cuerpo al activarse (opcional)", ruleBodyClear:"Cuerpo al limpiarse (opcional)",
+        phOptional:"(opcional, dejar vacío = no hacer nada)",
         ruleRetain:"Retenido", rulePost:"POST", ruleSamples:"Persistencia (lecturas)", ruleTest:"Probar ahora",
         ruleMaxReached:"Máximo de reglas alcanzado.", ruleDelC:"Confirmar borrado de la regla",
         ruleActionN:"Acción", ruleAddAction:"+ añadir acción", ruleActMaxReached:"Máximo de acciones por regla.",
@@ -422,6 +424,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         ruleAnd:"AND", ruleOr:"OR", ruleThen:"Then", ruleActMqtt:"Publish MQTT", ruleActHook:"Webhook (URL)",
         ruleTopic:"MQTT topic", ruleUrl:"URL", ruleFire:"Message on activate", ruleClear:"Message on clear (optional)",
         ruleBody:"Body on activate (optional)", ruleBodyClear:"Body on clear (optional)",
+        phOptional:"(optional, leave empty = do nothing)",
         ruleRetain:"Retained", rulePost:"POST", ruleSamples:"Persistence (readings)", ruleTest:"Test now",
         ruleMaxReached:"Maximum number of rules reached.", ruleDelC:"Confirm deletion of rule",
         ruleActionN:"Action", ruleAddAction:"+ add action", ruleActMaxReached:"Maximum actions per rule.",
@@ -708,7 +711,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         fields='<div class="rule-field"><label>'+rt('ruleTopic')+'</label><input type="text" class="act-target" maxlength="95" value="'+resc(act.target)+'" placeholder="cmnd/calentador/Power"></div>'
           +'<div class="rule-field-row">'
           +'<div class="rule-field"><label>'+rt('ruleFire')+'</label><input type="text" class="act-fire" maxlength="63" value="'+resc(act.fire)+'" placeholder="OFF"></div>'
-          +'<div class="rule-field"><label>'+rt('ruleClear')+'</label><input type="text" class="act-clear" maxlength="63" value="'+resc(act.clear)+'" placeholder="ON"></div>'
+          +'<div class="rule-field"><label>'+rt('ruleClear')+'</label><input type="text" class="act-clear" maxlength="63" value="'+resc(act.clear)+'" placeholder="'+rt('phOptional')+'"></div>'
           +'</div>'
           +'<div class="rule-opts"><label><input type="checkbox" class="act-retain"'+(act.retain?' checked':'')+'> '+rt('ruleRetain')+'</label></div>';
       } else {
@@ -740,6 +743,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       var addAct = r.acts.length<RACTS ? '<button type="button" class="rule-add-action" onclick="rulesAddAction('+i+')">'+rt('ruleAddAction')+'</button>' : '';
       return '<div class="rule-card'+(r.enabled?'':' disabled')+'" data-idx="'+i+'">'
         + '<div class="rule-head">'
+        +   '<span class="rule-num">'+(i+1)+'</span>'
         +   '<input type="text" class="rname" maxlength="15" value="'+resc(r.name)+'" placeholder="'+rt('ruleName')+'">'
         +   '<label class="sw"><input type="checkbox" class="renabled"'+(r.enabled?' checked':'')+' onchange="rulesToggle('+i+')"> '+rt('ruleEnabled')+'</label>'
         +   '<button type="button" class="rule-del" onclick="rulesDel('+i+')" title="x">&#10005;</button>'
@@ -760,7 +764,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       var box=document.getElementById('rules-list');
       if(!box) return;
       var cc=document.getElementById('rules-count');
-      if(cc){ cc.textContent=RULES.length+'/'+RMAX; cc.className='rules-count'+(RULES.length>=RMAX?' full':''); }
+      if(cc){ cc.textContent=RULES.length; cc.className='rules-count'; }
       if(!RULES.length){ box.innerHTML='<div class="rules-intro">'+rt('rulesEmpty')+'</div>'; return; }
       var html='';
       for(var i=0;i<RULES.length;i++) html+=rCardHTML(i,RULES[i]);
