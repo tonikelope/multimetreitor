@@ -941,9 +941,12 @@ enum LcdLang : uint8_t { LANG_ES = 0, LANG_EN = 1 };
 // rescaled onto that window (see icpNivelPeligro), so a threshold of 50 %
 // warns with roughly half the window left.
 #define DEF_ICP_AVISO_MAX 120
-#define DEF_ICP_COOLDOWN 576           // tau2 ~= 1.5*tau1: de-energized cooling (no source, just convection)
-                                       // is slower than energized heating, so err on retaining residual
-                                       // heat after a trip (matches the worst-case philosophy elsewhere)
+#define DEF_ICP_COOLDOWN 384           // tau2 = tau1 (= DEF_ICP_TAU): a first-order thermal body cools with
+                                       // the same time constant it heats with (tau = C/hA, independent of
+                                       // whether an internal source is present -- the source sets the
+                                       // equilibrium, not the rate). The previous 1.5*tau1 made de-energized
+                                       // cooling slower than heating with no catalogue basis (curves only
+                                       // cover heating to trip); realigned to tau1, still conservative.
 // ICP sensitivity selector (%). 0 = slow branch (relaxed), 100 = fast branch
 // (worst case, warns earliest). Default 100 so it never warns late out of the box.
 #define DEF_ICP_SENS 100
@@ -986,7 +989,8 @@ static const float MAX_CONSUMO_VAL = 10000.0f;
 #define MAX_CONDS 3
 #define MAX_ACTIONS 2
 #define RULES_MAGIC 0x53   // marks a rules table written by this firmware (0x53: multi-action layout)
-#define ICP_MODEL_MAGIC 0x71  // marks thermal-image ICP parameters written by this firmware
+#define ICP_MODEL_MAGIC 0x72  // marks thermal-image ICP parameters written by this firmware
+                              // (0x72: cooldown default realigned from 1.5*tau1 to tau1)
 
 // ================== ICP FORENSIC LOG ===========
 // The manufacturer's envelope spans a factor ~80 in trip time, so no catalogue
@@ -1445,9 +1449,10 @@ void loadConfig() {
   if (config.icpModelMagic != ICP_MODEL_MAGIC) {
     config.icpK = DEF_ICP_K;
     config.icpTau = DEF_ICP_TAU;
-    // The old cooldown meant "seconds from 100 % to 0 %, linearly"; now it is an
-    // exponential time constant, so the stored number no longer means the same
-    // thing and is replaced rather than reinterpreted.
+    // Cooldown is replaced, not reinterpreted: pre-magic firmware stored it as a
+    // linear "seconds from 100 % to 0 %", and the 0x72 bump additionally realigns
+    // it from the old 1.5*tau1 assumption to tau1 (see DEF_ICP_COOLDOWN). Either
+    // way the stored number no longer matches the current model, so take the default.
     config.icpCooldownTime = DEF_ICP_COOLDOWN;
     // Keep the legacy curve readable by older firmware (see setDefaults).
     if (config.icpCurveTimesUnused[0] < 1 || config.icpCurveTimesUnused[0] > 7200) {
