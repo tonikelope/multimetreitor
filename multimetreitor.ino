@@ -1290,7 +1290,8 @@ static const float ICP_SENS_FLOOR_MAX = 0.922f;
 
 // ================== CONFIG META =================
 #define CONFIG_MAGIC 0x47
-#define CONFIG_VERSION 11
+#define CONFIG_VERSION 12
+#define CONFIG_VERSION_V11 11   // previous schema (pre-cleanup layout); migrated once on upgrade
 
 // ================== VALIDATION LIMITS ==========
 static const unsigned long MIN_REFRESH_MS = 1000, MAX_REFRESH_MS = 60000;
@@ -1315,10 +1316,10 @@ static const float MAX_CONSUMO_VAL = 10000.0f;
 #define MAX_RULES 16
 #define MAX_CONDS 8
 #define MAX_ACTIONS 4
-// Legacy limits: the shape of the OLD in-EEPROM rules table (config.rules), kept
-// ONLY to read the previously stored rules once and migrate them into the file.
-// Must stay at the old values so the EEPROM layout (and its static_asserts) is
-// byte-for-byte unchanged.
+// Legacy limits: the shape of the OLD in-EEPROM rules table, kept ONLY to size the
+// rules[] block inside AppConfigV11 so a deployed v11 config is read correctly on
+// upgrade. Must stay at the old values so the v11 layout (and its static_asserts)
+// is byte-for-byte unchanged.
 #define MAX_RULES_LEGACY 6
 #define MAX_CONDS_LEGACY 3
 #define MAX_ACTIONS_LEGACY 2
@@ -1478,7 +1479,12 @@ struct Rule {
   RuleActionDef acts[MAX_ACTIONS];
 };
 
-struct AppConfig {
+// ---- LEGACY on-EEPROM layout (config schema v11), kept ONLY to read a deployed
+// unit's stored config once and migrate it into the clean v12 struct below. This
+// is a byte-for-byte copy of the pre-cleanup AppConfig: DO NOT edit it, or a
+// deployed unit's config would be misread on upgrade. The static_asserts pin its
+// offsets so the compiler proves the migration reads the right bytes.
+struct AppConfigV11 {
   uint8_t magic;
   uint8_t version;
   char mqttBroker[32];
@@ -1489,10 +1495,8 @@ struct AppConfig {
   bool icpEnabled;
   float icpNominal;
   int icpUmbral;
-  int icpCurveTimesUnused[6];  // obsolete 6-point trip curve (thermal-image model
-                               // replaced it); kept so every later field keeps its
-                               // EEPROM offset and the energy history survives.
-  int icpCooldownTime;         // now tau2: cooling time constant with no load (s)
+  int icpCurveTimesUnused[6];
+  int icpCooldownTime;
   bool consumoEnabled;
   bool consumoEnAmperios;
   float consumoValor;
@@ -1501,80 +1505,98 @@ struct AppConfig {
   bool subtensionEnabled;
   float subtensionValor;
   time_t lastEnergyReset;
-
   MonthlyData monthlyHistory[24];
   uint8_t historyIndex;
   uint8_t currentMonth;
   uint16_t currentYear;
-
-  // Appended at the END on purpose: keeps every preceding field at the same
-  // EEPROM offset, so existing configs/energy history survive the upgrade
-  // without a CONFIG_VERSION bump. Garbage from old EEPROM is clamped in loadConfig().
   uint8_t lcdLang;
-
-  // Legacy rule table: the rules now live in a LittleFS file, but this block is
-  // kept (byte-identical to the old layout) so every following EEPROM field keeps
-  // its offset AND so the previously stored rules can be migrated once on upgrade.
   RuleLegacy rules[MAX_RULES_LEGACY];
   uint8_t rulesMagic;
-
-  // Thermal-image model parameters, appended without a version bump (same
-  // migration pattern as rules[]): an older config has garbage here, guarded
-  // by icpModelMagic.
-  float icpK;      // asymptote: I/In below which the breaker never trips
-  int icpTau;      // tau1: thermal time constant under load (s)
-  int icpAvisoMax; // countdown span of the bar, in seconds: the bar is empty
-                   // while at least this much time remains before the trip
+  float icpK;
+  int icpTau;
+  int icpAvisoMax;
   uint8_t icpModelMagic;
-
-  // Forensic log, appended last (same magic-guarded migration pattern).
   IcpEvent icpLog[MAX_ICP_EVENTS];
-  uint8_t icpLogIndex;   // next slot to write (ring buffer)
-  uint8_t icpLogCount;   // stored events, saturating at MAX_ICP_EVENTS
+  uint8_t icpLogIndex;
+  uint8_t icpLogCount;
   uint8_t icpLogMagic;
-
-  // ICP sensitivity selector (0-100 %), appended last with its own magic guard so
-  // an older config's garbage here is defaulted rather than trusted.
   uint8_t icpSensibilidad;
   uint8_t icpSensMagic;
-
-  // Configurable forensic-log thresholds, appended after the sensitivity block
-  // (its own magic guard). Nothing before shifts, so every existing offset holds.
-  float   icpLogMinAmp;     // OR peak current (A) to record an episode regardless of nivel
-  uint8_t icpLogMinNivel;   // danger level (%) that records an episode
+  float   icpLogMinAmp;
+  uint8_t icpLogMinNivel;
   uint8_t icpLogCfgMagic;
-
-  // Daily-energy tracking state (the per-day totals live in a LittleFS file; this
-  // is just the running anchor). Magic-guarded like the blocks above.
-  float   dayStartEnergy;   // cumulative kWh at the start of the current day
-  uint8_t currentDay;       // day-of-month of the current day (0 = uninitialised)
+  float   dayStartEnergy;
+  uint8_t currentDay;
   uint8_t energyDayMagic;
-
-  // Hourly-energy tracking state (per-hour totals in a LittleFS file; running
-  // anchor here). Own magic guard, appended last — nothing before it shifts.
-  float   hourStartEnergy;  // cumulative kWh at the start of the current hour
-  uint8_t currentHour;      // hour-of-day 0-23 (0xFF = uninitialised)
+  float   hourStartEnergy;
+  uint8_t currentHour;
   uint8_t energyHourMagic;
 };
 
-// Layout guards: the append-without-version-bump migration is only safe while
-// every field BEFORE `rules` keeps its offset and the struct fits one EEPROM
-// sector. If a future edit breaks either, this fails the BUILD instead of
-// silently corrupting deployed configs + energy history. (Offsets are the
-// ground-truth values from the xtensa target compiler; time_t is 8 bytes here.)
+// Layout guards for the LEGACY struct: these are the ground-truth offsets the
+// deployed v11 firmware actually wrote (xtensa target compiler; time_t is 8 bytes).
+// They must hold so the one-time v11->v12 migration reads the right bytes; a drift
+// here fails the BUILD instead of silently misreading a deployed unit's config.
+static_assert(offsetof(AppConfigV11, lcdLang) == 340, "v11 layout drifted before rules; migration would misread");
+static_assert(offsetof(AppConfigV11, rules) == 344, "v11 rules[] offset moved; migration is unsafe");
+static_assert(offsetof(AppConfigV11, rulesMagic) == 3344, "v11 rules[] block size drifted; migration would misread");
+static_assert(offsetof(AppConfigV11, icpSensMagic) == 3512, "v11 tail drifted; migration would misread");
+// Pin the WHOLE tail (the sensitivity/log-cfg/day/hour blocks migrateV11toV12 reads
+// under their magic guards): the last field's offset + the total size lock every
+// byte after icpSensMagic, so any accidental edit to the v11 tail fails the BUILD.
+static_assert(offsetof(AppConfigV11, energyHourMagic) == 3537, "v11 tail drifted past the sensitivity block; migration would misread");
+static_assert(sizeof(AppConfigV11) == 3544, "v11 struct size drifted; migration and EEPROM_SIZE would be wrong");
+
+// ---- ACTIVE config (schema v12): the clean struct. Everything that grows now
+// lives in LittleFS (forensic log, rules, monthly/daily/hourly history), so the
+// EEPROM only holds these small fixed settings + ICP calibration + period anchors.
+// A single magic+version guards the WHOLE struct: any future layout change just
+// bumps CONFIG_VERSION (no more per-block magic guards, no more append-without-bump).
+struct AppConfig {
+  uint8_t  magic;
+  uint8_t  version;
+
+  // Connectivity + UI
+  char     mqttBroker[32];
+  char     mqttClient[32];
+  unsigned long refreshInterval;
+  bool     alertaSonora;
+  uint8_t  lcdMask;
+  uint8_t  lcdLang;
+
+  // ICP protection + thermal-image model + forensic-log thresholds
+  bool     icpEnabled;
+  float    icpNominal;
+  int      icpUmbral;
+  int      icpCooldownTime;   // tau2: cooling time constant with no load (s)
+  float    icpK;              // asymptote: I/In below which the breaker never trips
+  int      icpTau;            // tau1: thermal time constant under load (s)
+  int      icpAvisoMax;       // countdown span of the bar (s)
+  uint8_t  icpSensibilidad;   // 0-100 % sensitivity selector
+  float    icpLogMinAmp;      // OR peak current (A) that records an episode
+  uint8_t  icpLogMinNivel;    // danger level (%) that records an episode
+
+  // Consumption / voltage alerts
+  bool     consumoEnabled;
+  bool     consumoEnAmperios;
+  float    consumoValor;
+  bool     sobretensionEnabled;
+  float    sobretensionValor;
+  bool     subtensionEnabled;
+  float    subtensionValor;
+
+  // Energy period anchors (the per-period totals themselves live in LittleFS)
+  time_t   lastEnergyReset;
+  uint8_t  currentMonth;
+  uint16_t currentYear;
+  float    dayStartEnergy;    // cumulative kWh at the start of the current day
+  uint8_t  currentDay;        // day-of-month of the current day (0 = uninitialised)
+  float    hourStartEnergy;   // cumulative kWh at the start of the current hour
+  uint8_t  currentHour;       // hour-of-day 0-23 (0xFF = uninitialised)
+};
+
 static_assert(sizeof(AppConfig) <= 4096, "AppConfig exceeds one EEPROM sector (4096 B)");
-static_assert(offsetof(AppConfig, lcdLang) == 340, "AppConfig layout drifted before rules; bump CONFIG_VERSION");
-static_assert(offsetof(AppConfig, rules) == 344, "rules[] offset moved; EEPROM migration is unsafe");
-// The guards above pin everything UP TO rules[]. These two pin the SIZE of the
-// rules block and the whole appended tail: editing MAX_RULES / MAX_CONDS /
-// MAX_ACTIONS or any char[] inside Rule/RuleActionDef would shift rulesMagic and
-// every block appended after it (ICP model, forensic log, sensitivity). On the
-// next boot of a DEPLOYED unit those magics would then read from the wrong offset
-// and silently reset the ICP calibration + forensic log. Fail the BUILD instead.
-// (Ground-truth offsets from the xtensa target compiler; change only with a
-// deliberate, migration-aware layout edit.)
-static_assert(offsetof(AppConfig, rulesMagic) == 3344, "rules[] block size drifted; appended blocks would shift and reset on deployed units");
-static_assert(offsetof(AppConfig, icpSensMagic) == 3512, "AppConfig tail drifted; appended magic-guarded blocks would misread on deployed units");
+static_assert(sizeof(AppConfig) <= sizeof(AppConfigV11), "v12 config must be no larger than the v11 buffer it migrates from");
 
 // ================== LCD TEXT & ALERTS ==========
 struct LCDLines {
@@ -1681,7 +1703,11 @@ WiFiClient espClient;
 PubSubClient mqttClient(espClient);
 
 // ================== EEPROM SIZE ===============
-#define EEPROM_SIZE sizeof(AppConfig)
+// Sized to the LEGACY (v11) struct, not the smaller v12 one: loadConfig() overlays
+// a v11 layout on this RAM buffer to detect+migrate a deployed unit, so the buffer
+// must be big enough to hold the whole v11 struct. The live v12 config is far
+// smaller; the extra buffer bytes are just unused tail (cleared on /wipe).
+#define EEPROM_SIZE sizeof(AppConfigV11)
 
 // ================== UTILS =====================
 time_t getCurrentEpoch();  // fwd
@@ -1712,59 +1738,36 @@ void setDefaults() {
   safeCopy(config.mqttBroker, DEF_MQTT_BROKER);
   safeCopy(config.mqttClient, DEF_MQTT_CLIENT);
   config.refreshInterval = DEF_REFRESH_MS;
-
   config.alertaSonora = DEF_ALERTA_SONORA;
   config.lcdMask = DEF_LCD_MASK;
+  config.lcdLang = DEF_LCD_LANG;
 
   config.icpEnabled = DEF_ICP_ENABLED;
   config.icpNominal = DEF_ICP_NOMINAL;
   config.icpUmbral = DEF_ICP_UMBRAL;
-  // Legacy values, NOT zeros: firmware older than the thermal-image model
-  // validates this field on boot and wipes the whole config (losing the energy
-  // history) if any entry is below MIN_CURVE_TIME_S. Writing the old defaults
-  // keeps a rollback safe.
-  int legacyCurve[6] = { 2700, 900, 180, 25, 7, 1 };
-  for (int i = 0; i < 6; i++) config.icpCurveTimesUnused[i] = legacyCurve[i];
   config.icpCooldownTime = DEF_ICP_COOLDOWN;
   config.icpK = DEF_ICP_K;
   config.icpTau = DEF_ICP_TAU;
   config.icpAvisoMax = DEF_ICP_AVISO_MAX;
-  config.icpModelMagic = ICP_MODEL_MAGIC;
-  memset(config.icpLog, 0, sizeof(config.icpLog));
-  config.icpLogIndex = 0;
-  config.icpLogCount = 0;
-  config.icpLogMagic = ICP_LOG_MAGIC;
   config.icpSensibilidad = DEF_ICP_SENS;
-  config.icpSensMagic = ICP_SENS_MAGIC;
   config.icpLogMinAmp = DEF_ICP_LOG_MIN_AMP;
   config.icpLogMinNivel = DEF_ICP_LOG_MIN_NIVEL;
-  config.icpLogCfgMagic = ICP_LOG_CFG_MAGIC;
-  config.dayStartEnergy = 0.0f;
-  config.currentDay = 0;
-  config.energyDayMagic = ENERGY_DAY_MAGIC;
-  config.hourStartEnergy = 0.0f;
-  config.currentHour = 0xFF;
-  config.energyHourMagic = ENERGY_HOUR_MAGIC;
 
   config.consumoEnabled = DEF_CONSUMO_ENABLED;
   config.consumoEnAmperios = DEF_CONSUMO_TIPO_A;
   config.consumoValor = DEF_CONSUMO_VAL;
-
   config.sobretensionEnabled = DEF_SOBRET_ENABLED;
   config.sobretensionValor = DEF_SOBRET_VAL;
   config.subtensionEnabled = DEF_SUBT_ENABLED;
   config.subtensionValor = DEF_SUBT_VAL;
 
   config.lastEnergyReset = 0;
-  memset(config.monthlyHistory, 0, sizeof(config.monthlyHistory));
-  config.historyIndex = 0;
   config.currentMonth = 0;
   config.currentYear = 0;
-
-  config.lcdLang = DEF_LCD_LANG;
-
-  memset(config.rules, 0, sizeof(config.rules));
-  config.rulesMagic = RULES_MAGIC;
+  config.dayStartEnergy = 0.0f;
+  config.currentDay = 0;
+  config.hourStartEnergy = 0.0f;
+  config.currentHour = 0xFF;
 }
 
 void saveConfig() {
@@ -1784,137 +1787,146 @@ void safeBackgroundSaveConfig() {
   }
 }
 
+// True when every HARD-validated field is in range. A failure here means the
+// config is wiped to defaults (the same fields v11 wiped over): connectivity,
+// refresh, ICP nominal/umbral/cooldown, and any enabled voltage limit.
+static bool configHardFieldsValid() {
+  if (config.refreshInterval < MIN_REFRESH_MS || config.refreshInterval > MAX_REFRESH_MS) return false;
+  size_t bl = strnlen(config.mqttBroker, sizeof(config.mqttBroker));
+  size_t cl = strnlen(config.mqttClient, sizeof(config.mqttClient));
+  if (bl < 7 || bl > 31) return false;
+  if (cl < 3 || cl > 31) return false;
+  if (isnan(config.icpNominal) || config.icpNominal < MIN_ICP_NOMINAL_A || config.icpNominal > MAX_ICP_NOMINAL_A) return false;
+  if (config.icpUmbral < MIN_ICP_UMBRAL || config.icpUmbral > MAX_ICP_UMBRAL) return false;
+  if (config.icpCooldownTime < MIN_ICP_COOLDOWN_S || config.icpCooldownTime > MAX_ICP_COOLDOWN_S) return false;
+  if (config.sobretensionEnabled && (config.sobretensionValor < MIN_VOLTAGE_LIMIT || config.sobretensionValor > MAX_VOLTAGE_LIMIT)) return false;
+  if (config.subtensionEnabled && (config.subtensionValor < MIN_VOLTAGE_LIMIT || config.subtensionValor > MAX_VOLTAGE_LIMIT)) return false;
+  return true;
+}
+
+// Clamps the SOFT fields in place (a bad value is defaulted, not wiped) — exactly
+// what the v11 per-block magic-guard else-branches did, now that a single version
+// guard covers the whole struct. Idempotent, so it is safe to run every boot.
+static void configClampSoftFields() {
+  if (config.lcdLang > LANG_EN) config.lcdLang = DEF_LCD_LANG;
+  if (isnan(config.icpK) || config.icpK < MIN_ICP_K || config.icpK > MAX_ICP_K) config.icpK = DEF_ICP_K;
+  if (config.icpTau < MIN_ICP_TAU_S || config.icpTau > MAX_ICP_TAU_S) config.icpTau = DEF_ICP_TAU;
+  if (config.icpAvisoMax < MIN_ICP_AVISO_S || config.icpAvisoMax > MAX_ICP_AVISO_S) config.icpAvisoMax = DEF_ICP_AVISO_MAX;
+  if (config.icpSensibilidad > MAX_ICP_SENS) config.icpSensibilidad = DEF_ICP_SENS;
+  if (isnan(config.icpLogMinAmp) || config.icpLogMinAmp < MIN_ICP_LOG_AMP || config.icpLogMinAmp > MAX_ICP_LOG_AMP) config.icpLogMinAmp = DEF_ICP_LOG_MIN_AMP;
+  if (config.icpLogMinNivel > MAX_ICP_LOG_NIVEL) config.icpLogMinNivel = DEF_ICP_LOG_MIN_NIVEL;
+  if (isnan(config.dayStartEnergy) || config.dayStartEnergy < 0.0f) config.dayStartEnergy = 0.0f;
+  if (config.currentDay > 31) config.currentDay = 0;
+  if (isnan(config.hourStartEnergy) || config.hourStartEnergy < 0.0f) config.hourStartEnergy = 0.0f;
+  if (config.currentHour > 23 && config.currentHour != 0xFF) config.currentHour = 0xFF;
+}
+
+// One-time upgrade of a deployed v11 EEPROM into the clean v12 struct. Reads only
+// the fields the cleanup keeps, honouring each v11 magic guard exactly as the v11
+// loadConfig() trusted it, then persists v12. The bulk data (forensic log, rules,
+// monthly/daily/hourly history) already lives in LittleFS, untouched by this.
+static void migrateV11toV12(const AppConfigV11 &old) {
+  setDefaults();   // v12 defaults + magic + version; every kept field starts sane
+
+  // Guardless v11 fields (v11 already range-checked the hard ones on its own boot).
+  strlcpy(config.mqttBroker, old.mqttBroker, sizeof(config.mqttBroker));
+  strlcpy(config.mqttClient, old.mqttClient, sizeof(config.mqttClient));
+  config.refreshInterval     = old.refreshInterval;
+  config.alertaSonora        = old.alertaSonora;
+  config.lcdMask             = old.lcdMask;
+  config.lcdLang             = (old.lcdLang > LANG_EN) ? DEF_LCD_LANG : old.lcdLang;
+  config.icpEnabled          = old.icpEnabled;
+  config.icpNominal          = old.icpNominal;
+  config.icpUmbral           = old.icpUmbral;
+  config.consumoEnabled      = old.consumoEnabled;
+  config.consumoEnAmperios   = old.consumoEnAmperios;
+  config.consumoValor        = old.consumoValor;
+  config.sobretensionEnabled = old.sobretensionEnabled;
+  config.sobretensionValor   = old.sobretensionValor;
+  config.subtensionEnabled   = old.subtensionEnabled;
+  config.subtensionValor     = old.subtensionValor;
+  config.lastEnergyReset     = old.lastEnergyReset;
+  config.currentMonth        = old.currentMonth;
+  config.currentYear         = old.currentYear;
+
+  // Magic-guarded v11 blocks: carry over only when the marker validates (exactly
+  // what v11 trusted); otherwise keep the safe default setDefaults() already wrote.
+  // icpCooldownTime is tied to the thermal model, so it travels with that guard:
+  // a pre-model config stored a differently-meaning cooldown that v11 also reset.
+  if (old.icpModelMagic == ICP_MODEL_MAGIC) {
+    config.icpK            = old.icpK;
+    config.icpTau          = old.icpTau;
+    config.icpAvisoMax     = old.icpAvisoMax;
+    config.icpCooldownTime = old.icpCooldownTime;
+  }
+  if (old.icpSensMagic == ICP_SENS_MAGIC) {
+    config.icpSensibilidad = old.icpSensibilidad;
+  } else {
+    // v11 recalibrated the thermal model to the sensitivity-era defaults whenever
+    // the sensitivity block was absent (the old k/tau/cooldown were a different
+    // calibration). Replicate that exactly, so a pre-sensitivity v11 unit upgrades
+    // to the same params v11 would have adopted. (avisoMax was NOT reset by v11.)
+    config.icpSensibilidad = DEF_ICP_SENS;
+    config.icpK            = DEF_ICP_K;
+    config.icpTau          = DEF_ICP_TAU;
+    config.icpCooldownTime = DEF_ICP_COOLDOWN;
+  }
+  if (old.icpLogCfgMagic == ICP_LOG_CFG_MAGIC) {
+    config.icpLogMinAmp   = old.icpLogMinAmp;
+    config.icpLogMinNivel = old.icpLogMinNivel;
+  }
+  if (old.energyDayMagic == ENERGY_DAY_MAGIC) {
+    config.dayStartEnergy = old.dayStartEnergy;
+    config.currentDay     = old.currentDay;
+  }
+  if (old.energyHourMagic == ENERGY_HOUR_MAGIC) {
+    config.hourStartEnergy = old.hourStartEnergy;
+    config.currentHour     = old.currentHour;
+  }
+
+  // Same clamps/validation a normal v12 load applies, so a tampered or half-written
+  // v11 EEPROM cannot carry an out-of-range value across the upgrade.
+  configClampSoftFields();
+  if (!configHardFieldsValid()) setDefaults();
+
+  config.magic   = CONFIG_MAGIC;
+  config.version = CONFIG_VERSION;
+  saveConfig();   // persist the clean v12; the leftover v11 tail bytes are now inert
+  logMessage(F("[CONFIG] Migrated EEPROM v11 -> v12 (struct cleanup)."));
+}
+
 void loadConfig() {
+  // Detect a deployed v11 config by its schema bytes: magic and version sit at
+  // offset 0/1 in BOTH layouts, so a two-byte peek decides without reading the
+  // whole struct. (This migration assumes the bulk data already lives in LittleFS,
+  // which every unit that ran the intervening firmware phases has — the EEPROM no
+  // longer carries the rules/log/monthly arrays to seed from.)
+  if (EEPROM.read(0) == CONFIG_MAGIC && EEPROM.read(1) == CONFIG_VERSION_V11) {
+    // Copy the ~3.5 KB v11 image into a HEAP temporary (never the 4 KB boot stack)
+    // via EEPROM.get — a plain memcpy, so no strict-aliasing/lifetime concern —
+    // then migrate it into the clean v12 struct and release it.
+    AppConfigV11 *old = (AppConfigV11 *)malloc(sizeof(AppConfigV11));
+    if (old) {
+      EEPROM.get(0, *old);
+      migrateV11toV12(*old);
+      free(old);
+      return;   // config is now a persisted, valid v12
+    }
+    // malloc failing this early (heap is barely used at boot) is essentially
+    // impossible; if it ever did, fall through to the v12 path, which resets to
+    // defaults (recoverable via /import) rather than reading an uninitialised config.
+  }
+
+  // Normal path: the config is already v12 (or the EEPROM is fresh / corrupt).
   EEPROM.get(0, config);
   bool defaults = (config.magic != CONFIG_MAGIC) || (config.version != CONFIG_VERSION);
-
-  if (!defaults) {
-    if (config.refreshInterval < MIN_REFRESH_MS || config.refreshInterval > MAX_REFRESH_MS) defaults = true;
-    size_t bl = strnlen(config.mqttBroker, sizeof(config.mqttBroker));
-    size_t cl = strnlen(config.mqttClient, sizeof(config.mqttClient));
-    if (bl < 7 || bl > 31) defaults = true;
-    if (cl < 3 || cl > 31) defaults = true;
-    if (isnan(config.icpNominal) ||
-        config.icpNominal < MIN_ICP_NOMINAL_A || config.icpNominal > MAX_ICP_NOMINAL_A) defaults = true;
-    if (config.icpUmbral < MIN_ICP_UMBRAL || config.icpUmbral > MAX_ICP_UMBRAL) defaults = true;
-    if (config.icpCooldownTime < MIN_ICP_COOLDOWN_S || config.icpCooldownTime > MAX_ICP_COOLDOWN_S) defaults = true;
-    if (config.sobretensionEnabled && (config.sobretensionValor < MIN_VOLTAGE_LIMIT || config.sobretensionValor > MAX_VOLTAGE_LIMIT)) defaults = true;
-    if (config.subtensionEnabled && (config.subtensionValor < MIN_VOLTAGE_LIMIT || config.subtensionValor > MAX_VOLTAGE_LIMIT)) defaults = true;
-  }
+  if (!defaults && !configHardFieldsValid()) defaults = true;
   if (defaults) {
     setDefaults();
     saveConfig();
+    return;   // fresh defaults are already clean
   }
-
-  // lcdLang was appended to AppConfig without a version bump, so a config saved
-  // by older firmware has a garbage byte here. Clamp it to the default instead
-  // of wiping the whole config (which would lose the energy history).
-  if (config.lcdLang > LANG_EN) config.lcdLang = DEF_LCD_LANG;
-
-  // Legacy rules block (config.rules is now only a migration source: rulesLoad()
-  // reads it once into the LittleFS file). If the marker is absent, start empty;
-  // otherwise leave the bytes as-is — rulesMigrateFromEeprom() validates on copy.
-  if (config.rulesMagic != RULES_MAGIC) {
-    memset(config.rules, 0, sizeof(config.rules));
-    config.rulesMagic = RULES_MAGIC;
-  }
-
-  // Thermal-image parameters, appended after rulesMagic. A config written by
-  // firmware older than the model change has garbage here; fall back to the
-  // catalogue-calibrated defaults instead of wiping the whole config. The old
-  // 6-point curve is intentionally NOT migrated: it described a different model
-  // (accumulated overload time), so its numbers have no meaning here.
-  if (config.icpModelMagic != ICP_MODEL_MAGIC) {
-    config.icpK = DEF_ICP_K;
-    config.icpTau = DEF_ICP_TAU;
-    // Cooldown is replaced, not reinterpreted: pre-magic firmware stored it as a
-    // linear "seconds from 100 % to 0 %", and the 0x72 bump additionally realigns
-    // it from the old 1.5*tau1 assumption to tau1 (see DEF_ICP_COOLDOWN). Either
-    // way the stored number no longer matches the current model, so take the default.
-    config.icpCooldownTime = DEF_ICP_COOLDOWN;
-    // Keep the legacy curve readable by older firmware (see setDefaults).
-    if (config.icpCurveTimesUnused[0] < 1 || config.icpCurveTimesUnused[0] > 7200) {
-      int legacyCurve[6] = { 2700, 900, 180, 25, 7, 1 };
-      for (int i = 0; i < 6; i++) config.icpCurveTimesUnused[i] = legacyCurve[i];
-    }
-    config.icpAvisoMax = DEF_ICP_AVISO_MAX;
-    config.icpModelMagic = ICP_MODEL_MAGIC;
-    // Persist immediately: otherwise the migration re-runs on every boot and
-    // silently overwrites the stored cooldown each time.
-    saveConfig();
-    logMessage(F("[ICP] Thermal model migrated to defaults (k/tau/cooldown)."));
-  } else {
-    if (isnan(config.icpK) || config.icpK < MIN_ICP_K || config.icpK > MAX_ICP_K) config.icpK = DEF_ICP_K;
-    if (config.icpTau < MIN_ICP_TAU_S || config.icpTau > MAX_ICP_TAU_S) config.icpTau = DEF_ICP_TAU;
-    if (config.icpAvisoMax < MIN_ICP_AVISO_S || config.icpAvisoMax > MAX_ICP_AVISO_S) config.icpAvisoMax = DEF_ICP_AVISO_MAX;
-  }
-
-  // Forensic log, appended after the model parameters. Same pattern: garbage
-  // from older firmware is discarded rather than wiping the whole config.
-  if (config.icpLogMagic != ICP_LOG_MAGIC) {
-    memset(config.icpLog, 0, sizeof(config.icpLog));
-    config.icpLogIndex = 0;
-    config.icpLogCount = 0;
-    config.icpLogMagic = ICP_LOG_MAGIC;
-    saveConfig();
-  } else {
-    if (config.icpLogIndex >= MAX_ICP_EVENTS) config.icpLogIndex = 0;
-    if (config.icpLogCount > MAX_ICP_EVENTS) config.icpLogCount = MAX_ICP_EVENTS;
-  }
-
-  // ICP sensitivity selector, appended after the forensic log. Older firmware has
-  // garbage here: default to worst-case (100 %) and, on this one-time migration,
-  // re-fit k/tau to the sensitivity model so the selector spans the band the same
-  // way for every config (the previous k/tau were a different calibration).
-  if (config.icpSensMagic != ICP_SENS_MAGIC) {
-    config.icpSensibilidad = DEF_ICP_SENS;
-    config.icpK = DEF_ICP_K;
-    config.icpTau = DEF_ICP_TAU;
-    config.icpCooldownTime = DEF_ICP_COOLDOWN;
-    config.icpSensMagic = ICP_SENS_MAGIC;
-    saveConfig();
-    logMessage(F("[ICP] Sensitivity model initialised (k/tau recalibrated)."));
-  } else if (config.icpSensibilidad > MAX_ICP_SENS) {
-    config.icpSensibilidad = DEF_ICP_SENS;
-  }
-
-  // Configurable log thresholds, appended after the sensitivity block. Older
-  // firmware has garbage here: default it. Nothing before shifts, so the rest of
-  // the config (rules, energy history, calibration) is untouched.
-  if (config.icpLogCfgMagic != ICP_LOG_CFG_MAGIC) {
-    config.icpLogMinAmp = DEF_ICP_LOG_MIN_AMP;
-    config.icpLogMinNivel = DEF_ICP_LOG_MIN_NIVEL;
-    config.icpLogCfgMagic = ICP_LOG_CFG_MAGIC;
-    saveConfig();
-    logMessage(F("[ICP] Log thresholds initialised (nivel/amp)."));
-  } else {
-    if (isnan(config.icpLogMinAmp) || config.icpLogMinAmp < MIN_ICP_LOG_AMP || config.icpLogMinAmp > MAX_ICP_LOG_AMP) config.icpLogMinAmp = DEF_ICP_LOG_MIN_AMP;
-    if (config.icpLogMinNivel > MAX_ICP_LOG_NIVEL) config.icpLogMinNivel = DEF_ICP_LOG_MIN_NIVEL;
-  }
-
-  // Daily-energy tracking state, appended last. Older firmware has garbage here.
-  if (config.energyDayMagic != ENERGY_DAY_MAGIC) {
-    config.dayStartEnergy = 0.0f;
-    config.currentDay = 0;
-    config.energyDayMagic = ENERGY_DAY_MAGIC;
-    saveConfig();
-    logMessage(F("[HIST] Daily energy tracking initialised."));
-  } else {
-    if (isnan(config.dayStartEnergy) || config.dayStartEnergy < 0.0f) config.dayStartEnergy = 0.0f;
-    if (config.currentDay > 31) config.currentDay = 0;
-  }
-
-  // Hourly-energy tracking state, appended last. Older firmware has garbage here.
-  if (config.energyHourMagic != ENERGY_HOUR_MAGIC) {
-    config.hourStartEnergy = 0.0f;
-    config.currentHour = 0xFF;
-    config.energyHourMagic = ENERGY_HOUR_MAGIC;
-    saveConfig();
-    logMessage(F("[HIST] Hourly energy tracking initialised."));
-  } else {
-    if (isnan(config.hourStartEnergy) || config.hourStartEnergy < 0.0f) config.hourStartEnergy = 0.0f;
-    if (config.currentHour > 23 && config.currentHour != 0xFF) config.currentHour = 0xFF;
-  }
+  configClampSoftFields();
 }
 
 // ================== WIFI =======================
@@ -2540,9 +2552,8 @@ float icpNivelPeligro() {
 // ---- Forensic log storage: a LittleFS file, not the old 12-slot EEPROM ring ----
 // Append-only binary file of fixed 10-byte records (fields written explicitly, so
 // the format does not depend on struct padding). ~2 MB of FS holds effectively
-// unlimited episodes; a soft cap rotates the very oldest away. The EEPROM ring
-// fields (config.icpLog*) are now frozen — kept only to seed the file once and
-// removed in the later EEPROM cleanup.
+// unlimited episodes; a soft cap rotates the very oldest away. The old EEPROM ring
+// was removed in the v12 config cleanup — the forensic log lives only here now.
 #define ICP_LOG_FILE "/icplog.bin"
 static const size_t   ICP_REC_SIZE    = 10;
 static const uint32_t ICP_LOG_FS_CAP  = 5000;   // records kept in the file (~50 KB)
@@ -2584,18 +2595,9 @@ static void fsLogAppend(const IcpEvent &e) {
   fsLogRotate();
 }
 
-// One-time seed of the FS log from the legacy EEPROM ring, so the migration keeps
-// the episodes already recorded. Runs only when the file does not yet exist.
-static void fsLogMigrateFromEeprom() {
-  if (LittleFS.exists(ICP_LOG_FILE)) return;
-  File f = LittleFS.open(ICP_LOG_FILE, "w");
-  if (!f) return;
-  uint8_t b[ICP_REC_SIZE];
-  uint8_t n = 0;
-  for (uint8_t i = 0; i < config.icpLogCount && i < MAX_ICP_EVENTS; i++) { icpEventPack(config.icpLog[i], b); f.write(b, ICP_REC_SIZE); n++; }
-  f.close();
-  logMessage(String(F("[ICP-LOG] Migrated ")) + String(n) + F(" events to LittleFS."));
-}
+// (The one-time seed of the FS forensic log from the legacy EEPROM ring was
+// removed with the v12 EEPROM cleanup: the log lives in LittleFS now, and the
+// EEPROM no longer carries the icpLog[] ring to seed from.)
 
 // Removes forensic records flagged as trips that could not have been real trips:
 // a genuine trip reaches ~100 % thermal AND a trip-capable current. This cleans
@@ -3329,34 +3331,12 @@ void rulesSave() {
   f.close();
 }
 
-// One-time seed of g_rules from the legacy EEPROM table (config.rules), widening
-// each rule into the new (bigger) shape. Only what was actually stored is copied.
-static void rulesMigrateFromEeprom() {
-  memset(g_rules, 0, sizeof(g_rules));
-  g_ruleCount = 0;
-  if (config.rulesMagic != RULES_MAGIC) return;   // nothing valid to migrate
-  for (uint8_t i = 0; i < MAX_RULES_LEGACY && g_ruleCount < MAX_RULES; i++) {
-    const RuleLegacy &L = config.rules[i];
-    Rule &r = g_rules[g_ruleCount];
-    r.enabled = L.enabled; r.combine = (L.combine > RC_OR) ? RC_AND : L.combine;
-    r.samples = (L.samples < RULE_MIN_SAMPLES || L.samples > RULE_MAX_SAMPLES) ? RULE_DEF_SAMPLES : L.samples;
-    r.condCount = L.condCount > MAX_CONDS_LEGACY ? MAX_CONDS_LEGACY : L.condCount;
-    r.actCount  = L.actCount  > MAX_ACTIONS_LEGACY ? MAX_ACTIONS_LEGACY : L.actCount;
-    for (uint8_t k = 0; k < r.condCount; k++) r.conds[k] = L.conds[k];
-    strlcpy(r.name, L.name, sizeof(r.name));
-    for (uint8_t a = 0; a < r.actCount; a++) {
-      r.acts[a].type  = (L.acts[a].type > RA_WEBHOOK) ? RA_MQTT : L.acts[a].type;
-      r.acts[a].flags = L.acts[a].flags;
-      strlcpy(r.acts[a].target, L.acts[a].target, sizeof(r.acts[a].target));
-      strlcpy(r.acts[a].fire,   L.acts[a].fire,   sizeof(r.acts[a].fire));
-      strlcpy(r.acts[a].clear,  L.acts[a].clear,  sizeof(r.acts[a].clear));
-    }
-    g_ruleCount++;
-  }
-}
+// (The one-time seed of g_rules from the legacy EEPROM rules table was removed
+// with the v12 EEPROM cleanup: rules live in a LittleFS file now, and the EEPROM
+// no longer carries the rules[] block to migrate from.)
 
-// Loads the active rules into g_rules: from the LittleFS file if present and of a
-// known version, otherwise a one-time migration from the legacy EEPROM table.
+// Loads the active rules into g_rules from the LittleFS file, if present and of a
+// known version; otherwise the table starts empty (a fresh unit has no rules yet).
 void rulesLoad() {
   memset(g_rules, 0, sizeof(g_rules));
   g_ruleCount = 0;
@@ -3377,12 +3357,11 @@ void rulesLoad() {
     f.close();
   }
   if (!loaded) {
-    rulesMigrateFromEeprom();
-    rulesSave();
-    logMessage(String(F("[RULES] Migrated ")) + String(g_ruleCount) + F(" rules to LittleFS."));
+    // No rules file yet (fresh unit, or FS just formatted): start empty. g_rules is
+    // already zeroed above; nothing to migrate now that the EEPROM rules block is gone.
+    g_ruleCount = 0;
   }
-  // Drop trailing empty rules (e.g. the blank tail of the migrated 6-slot table)
-  // so the editor shows only real rules.
+  // Drop trailing empty rules so the editor shows only real rules.
   while (g_ruleCount > 0) {
     const Rule &r = g_rules[g_ruleCount - 1];
     if (!r.enabled && r.condCount == 0 && r.actCount == 0 && r.name[0] == '\0') g_ruleCount--;
@@ -3817,64 +3796,23 @@ void handleReset() {
 }
 
 void handleWipeEEPROM() {
-  // ======= RAM BACKUP (before wiping) =======
-  // 1) Energy history and metadata
-  MonthlyData backupHistory[24];
-  memcpy(backupHistory, config.monthlyHistory, sizeof(config.monthlyHistory));
-  uint8_t backupHistoryIndex = config.historyIndex;
-  uint8_t backupCurrentMonth = config.currentMonth;
-  uint16_t backupCurrentYear = config.currentYear;
-  time_t backupLastEnergyReset = config.lastEnergyReset;
-
-  // 2) Freshest possible reading of current consumption (kWh)
-  //    Prefer reading from PZEM in case 'energy' in RAM is not fresh.
-  float backupEnergy = pzem.energy();
-  if (isnan(backupEnergy)) {
-    // If it fails, use what was in RAM.
-    backupEnergy = energy;
-  }
-  if (isnan(backupEnergy)) {
-    // Ultimate fallback, do not leave NaN.
-    backupEnergy = 0.0f;
-  }
+  // The energy history (monthly/daily/hourly) and the rules now live in LittleFS,
+  // which an EEPROM wipe does NOT touch — so only the small config in EEPROM is
+  // lost. Preserve the period anchors across the wipe so the current month keeps
+  // counting against the same reference after the reboot.
+  uint8_t  backupCurrentMonth    = config.currentMonth;
+  uint16_t backupCurrentYear     = config.currentYear;
+  time_t   backupLastEnergyReset = config.lastEnergyReset;
 
   // ======= PHYSICAL EEPROM WIPE =======
   for (int i = 0; i < EEPROM_SIZE; i++) EEPROM.write(i, 0xFF);
   EEPROM.commit();
 
-  // ======= RESTORE DEFAULT CONFIG =======
+  // ======= RESTORE DEFAULT CONFIG + period anchors =======
   setDefaults();
-
-  // ======= REINTEGRATE CONSUMPTION AND HISTORY =======
-  // Restore previous history and period metadata
-  memcpy(config.monthlyHistory, backupHistory, sizeof(config.monthlyHistory));
-  config.historyIndex = backupHistoryIndex;
-  config.currentMonth = backupCurrentMonth;
-  config.currentYear = backupCurrentYear;
+  config.currentMonth    = backupCurrentMonth;
+  config.currentYear     = backupCurrentYear;
   config.lastEnergyReset = backupLastEnergyReset;
-
-  // Ensure current month/year exists in history with current consumption
-  if (config.currentMonth != 0 && config.currentYear != 0) {
-    bool found = false;
-    for (int i = 0; i < 24; i++) {
-      if (config.monthlyHistory[i].month == config.currentMonth && config.monthlyHistory[i].year == config.currentYear) {
-        config.monthlyHistory[i].energy_kWh = backupEnergy;
-        found = true;
-        break;
-      }
-    }
-    if (!found) {
-      // If no entry existed for current month/year, create it in circular position
-      config.monthlyHistory[config.historyIndex] = {
-        config.currentMonth,
-        config.currentYear,
-        backupEnergy
-      };
-      config.historyIndex = (config.historyIndex + 1) % 24;
-    }
-  }
-
-  // Save everything persistently with preserved history
   saveConfig();
 
   // Normal reboot
@@ -4430,9 +4368,9 @@ void handleExport() {
 
   snprintf(buf, sizeof(buf),
     "\"energy\":{\"reset\":%ld,\"currentMonth\":%u,\"currentYear\":%u,\"currentDay\":%u,"
-    "\"dayStartEnergy\":%.4f,\"currentHour\":%u,\"hourStartEnergy\":%.4f,\"historyIndex\":%u,\"history\":[",
+    "\"dayStartEnergy\":%.4f,\"currentHour\":%u,\"hourStartEnergy\":%.4f,\"history\":[",
     (long)config.lastEnergyReset, config.currentMonth, config.currentYear, config.currentDay,
-    (double)config.dayStartEnergy, config.currentHour, (double)config.hourStartEnergy, config.historyIndex);
+    (double)config.dayStartEnergy, config.currentHour, (double)config.hourStartEnergy);
   server.sendContent(buf);
   bool firstM = true;
   {
@@ -4592,15 +4530,10 @@ void handleImport() {
   // The forensic log is not part of the backup (it lives in its own LittleFS
   // file), so there is nothing to restore here.
 
-  // Re-assert every magic so the imported blocks are trusted on the next boot.
+  // A single magic+version now guards the whole config (v12): re-assert it so the
+  // imported config is trusted on the next boot.
   config.magic = CONFIG_MAGIC;
   config.version = CONFIG_VERSION;
-  config.rulesMagic = RULES_MAGIC;
-  config.icpModelMagic = ICP_MODEL_MAGIC;
-  config.icpLogMagic = ICP_LOG_MAGIC;
-  config.icpSensMagic = ICP_SENS_MAGIC;
-  config.icpLogCfgMagic = ICP_LOG_CFG_MAGIC;
-  config.energyDayMagic = ENERGY_DAY_MAGIC;
   saveConfig();
   logMessage(F("[IMPORT] Backup restored."));
   server.send(200, "application/json", "{\"ok\":true}");
@@ -4741,20 +4674,9 @@ static void fsEnergyMonthlyUpsert(uint16_t y, uint8_t m, float kwh) {
   a.close();
 }
 
-// One-time seed of the monthly file from the legacy EEPROM ring on first upgrade.
-static void fsEnergyMonthlyMigrate() {
-  if (LittleFS.exists(ENERGY_MONTHLY_FILE)) return;
-  File f = LittleFS.open(ENERGY_MONTHLY_FILE, "w");   // create (even if empty)
-  if (f) f.close();
-  uint8_t n = 0;
-  for (int i = 0; i < 24; i++) {
-    const MonthlyData &md = config.monthlyHistory[i];
-    if (md.month == 0) continue;
-    fsEnergyMonthlyUpsert(md.year, md.month, md.energy_kWh);
-    n++;
-  }
-  logMessage(String(F("[HIST] Migrated ")) + String(n) + F(" months to LittleFS."));
-}
+// (The one-time seed of the monthly file from the legacy EEPROM ring was removed
+// with the v12 EEPROM cleanup: the monthly history lives in LittleFS now, and the
+// EEPROM no longer carries the monthlyHistory[] ring to migrate from.)
 
 void guardarMesActual() {
   if (config.currentMonth == 0 || config.currentYear == 0) return;
@@ -4901,13 +4823,11 @@ void setupHardware() {
   // formatting on first use. Non-fatal on failure: the EEPROM config still works.
   if (LittleFS.begin()) {
     logMessage(F("[FS] LittleFS mounted"));
-    fsLogMigrateFromEeprom();   // one-time: seed the FS forensic log from the EEPROM ring
     fsLogPurgeFalseTrips();     // clean out bogus "probable trips" from the old heuristic
-    fsEnergyMonthlyMigrate();   // one-time: seed the FS monthly history from the EEPROM ring
-    rulesLoad();                // load rules from the FS file (migrating from EEPROM once)
+    rulesLoad();                // load rules from the FS file
   } else {
     logMessage(F("[FS] LittleFS mount FAILED"));
-    rulesMigrateFromEeprom();   // FS down: at least run the legacy rules from RAM
+    g_ruleCount = 0;            // no rules without the FS file (EEPROM no longer stores them)
   }
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
