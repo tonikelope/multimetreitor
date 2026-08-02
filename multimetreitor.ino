@@ -1079,6 +1079,15 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
     <div class="kpis" id="kpis"></div>
     <div class="card"><h2 id="hMonth">Consumo mensual</h2><div class="chart" id="chMonth"><div class="empty">&hellip;</div></div></div>
     <div class="card"><h2 id="hDay">Consumo diario</h2><div class="chart" id="chDay"><div class="empty">&hellip;</div></div></div>
+    <div class="card">
+      <h2 id="hHour">Consumo por hora</h2>
+      <div style="margin:0 0 12px 0;font-size:0.92em;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span id="hourPickLbl">Ver un día:</span>
+        <input type="date" id="dpick" style="padding:3px 6px;border:1px solid #bbf780;border-radius:6px;font-size:0.95em">
+        <button type="button" id="hourGo" onclick="pickDay()" style="background:#1e90ff;color:#fff;border:none;border-radius:6px;padding:4px 13px;cursor:pointer;font-size:0.9em">Ver</button>
+      </div>
+      <div class="chart" id="chHour"><div class="empty" id="hourHint">&hellip;</div></div>
+    </div>
   </div>
   <script>
     var LANG='%LANG%';
@@ -1086,11 +1095,17 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
     var T={
       es:{title:'Consumo eléctrico',back:'← Volver',refresh:'Actualizar',
           month:'Consumo mensual',day:'Consumo diario (últimos {n} días)',
+          hour:'Consumo por hora',hourPick:'Ver un día:',hourGo:'Ver',
+          hourHint:'Elige un día arriba, o pulsa una barra del gráfico diario.',
+          hourOf:'Horas del {d}/{m}/{y}',hourNone:'Sin datos horarios para ese día.',
           kToday:'Hoy',kMonth:'Este mes',kAvg:'Media diaria',
           empty:'Sin datos todavía',err:'Error al cargar los consumos.',
           months:['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic']},
       en:{title:'Electricity usage',back:'← Back',refresh:'Refresh',
           month:'Monthly usage',day:'Daily usage (last {n} days)',
+          hour:'Hourly usage',hourPick:'View a day:',hourGo:'View',
+          hourHint:'Pick a day above, or tap a bar in the daily chart.',
+          hourOf:'Hours of {d}/{m}/{y}',hourNone:'No hourly data for that day.',
           kToday:'Today',kMonth:'This month',kAvg:'Daily avg',
           empty:'No data yet',err:'Failed to load usage data.',
           months:['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']}
@@ -1104,6 +1119,10 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
       document.getElementById('refresh').textContent=L.refresh;
       document.getElementById('hMonth').textContent=L.month;
       document.getElementById('hDay').textContent=L.day.replace('{n}',DAYS_SHOWN);
+      document.getElementById('hHour').textContent=L.hour;
+      document.getElementById('hourPickLbl').textContent=L.hourPick;
+      document.getElementById('hourGo').textContent=L.hourGo;
+      document.getElementById('hourHint').textContent=L.hourHint;
     }
     function kpi(lbl,val){return '<div class="kpi"><div class="lbl">'+lbl+'</div><div class="val">'+val+' <small>kWh</small></div></div>';}
     function drawChart(el,items,showVals){
@@ -1112,7 +1131,8 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
       var h='';
       items.forEach(function(it){
         var px=Math.max(2,Math.round(it.v/max*140));
-        h+='<div class="bar'+(it.cur?' cur':'')+(showVals?' showval':'')+'" title="'+it.lab+': '+fmt(it.v)+' kWh">'
+        var clk=it.click?' onclick="'+it.click+'" style="cursor:pointer"':'';
+        h+='<div class="bar'+(it.cur?' cur':'')+(showVals?' showval':'')+'"'+clk+' title="'+it.lab+': '+fmt(it.v)+' kWh">'
           +'<div class="fill" style="height:'+px+'px"><span class="val">'+fmt(it.v)+'</span></div>'
           +'<div class="lab">'+it.lab+'</div></div>';
       });
@@ -1127,10 +1147,14 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
       if(j.mes_actual){curMonthV=num(j.mes_actual.consumo);
         months.push({v:curMonthV,lab:L.months[(+j.mes_actual.mes-1)%12]+" '"+String(j.mes_actual['año']).slice(2),cur:true});}
       drawChart(document.getElementById('chMonth'),months,months.length<=14);
-      // Daily: recent DAYS_SHOWN completed days + today.
-      var dias=(j.diario||[]).map(function(d){return {v:num(d.kwh),lab:String(d.dia),cur:false};});
+      // Daily: recent DAYS_SHOWN completed days + today. Each bar drills into its hours.
+      var dias=(j.diario||[]).map(function(d){return {v:num(d.kwh),lab:String(d.dia),cur:false,
+        click:'drillDay('+(+d['año'])+','+(+d.mes)+','+(+d.dia)+')'};});
       var today=j.dia_actual?num(j.dia_actual.kwh):0;
-      if(j.dia_actual){dias.push({v:today,lab:String(j.dia_actual.dia),cur:true});}
+      if(j.dia_actual){
+        var ty=(j.mes_actual?+j.mes_actual['año']:0), tm=(j.mes_actual?+j.mes_actual.mes:0);
+        dias.push({v:today,lab:String(j.dia_actual.dia),cur:true,click:'drillDay('+ty+','+tm+','+(+j.dia_actual.dia)+')'});
+      }
       dias=dias.slice(-DAYS_SHOWN);
       drawChart(document.getElementById('chDay'),dias,dias.length<=16);
       // KPIs
@@ -1139,6 +1163,24 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
         kpi(L.kToday,fmt(today))+kpi(L.kMonth,fmt(curMonthV))+kpi(L.kAvg,fmt(avg));
     }
     function showErr(){document.getElementById('kpis').innerHTML='';document.getElementById('chMonth').innerHTML='<div class="empty">'+L.err+'</div>';document.getElementById('chDay').innerHTML='';}
+    function pad2(n){return ('0'+n).slice(-2);}
+    window.drillDay=function(y,m,d){
+      var el=document.getElementById('chHour');
+      el.innerHTML='<div class="empty">&hellip;</div>';
+      var dp=document.getElementById('dpick'); if(dp) dp.value=y+'-'+pad2(m)+'-'+pad2(d);
+      var hh2=document.getElementById('hHour'); if(hh2) hh2.textContent=L.hour+' — '+L.hourOf.replace('{d}',d).replace('{m}',m).replace('{y}',y);
+      fetch('/json_hours?y='+y+'&m='+m+'&d='+d,{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){
+        var horas=(j.horas||[]);
+        if(!horas.length){ el.innerHTML='<div class="empty">'+L.hourNone+'</div>'; return; }
+        var byH={}; horas.forEach(function(x){byH[+x.hora]=num(x.kwh);});
+        var items=[]; for(var k=0;k<24;k++){ items.push({v:(byH[k]!==undefined?byH[k]:0),lab:k+'h'}); }
+        drawChart(el,items,false);
+      }).catch(function(){ el.innerHTML='<div class="empty">'+L.err+'</div>'; });
+    };
+    window.pickDay=function(){
+      var dp=document.getElementById('dpick'); if(!dp||!dp.value) return;
+      var p=dp.value.split('-'); if(p.length===3) drillDay(+p[0],+p[1],+p[2]);
+    };
     function load(){
       fetch('/consumo',{cache:'no-store'}).then(function(r){return r.json();}).then(render).catch(showErr);
     }
@@ -1307,8 +1349,10 @@ static const float MAX_CONSUMO_VAL = 10000.0f;
 #define DEF_ICP_LOG_MIN_AMP   30.0f
 #define ICP_LOG_CFG_MAGIC     0x4B   // marks the configurable log thresholds
 #define ENERGY_DAY_MAGIC      0x3C   // marks the daily-energy tracking state
+#define ENERGY_HOUR_MAGIC     0x2D   // marks the hourly-energy tracking state
 #define ENERGY_DAILY_FILE     "/energy_d.bin"   // LittleFS: one record per completed day
 #define ENERGY_MONTHLY_FILE   "/energy_m.bin"   // LittleFS: one record per month (upsert)
+#define ENERGY_HOURLY_FILE    "/energy_h.bin"   // LittleFS: one record per completed hour
 static void fsEnergyMonthlyUpsert(uint16_t y, uint8_t m, float kwh);  // fwd (used by /import)
 static const int   MIN_ICP_LOG_NIVEL = 0,  MAX_ICP_LOG_NIVEL = 100;
 static const float MIN_ICP_LOG_AMP   = 0.0f, MAX_ICP_LOG_AMP  = 100.0f;
@@ -1505,6 +1549,12 @@ struct AppConfig {
   float   dayStartEnergy;   // cumulative kWh at the start of the current day
   uint8_t currentDay;       // day-of-month of the current day (0 = uninitialised)
   uint8_t energyDayMagic;
+
+  // Hourly-energy tracking state (per-hour totals in a LittleFS file; running
+  // anchor here). Own magic guard, appended last — nothing before it shifts.
+  float   hourStartEnergy;  // cumulative kWh at the start of the current hour
+  uint8_t currentHour;      // hour-of-day 0-23 (0xFF = uninitialised)
+  uint8_t energyHourMagic;
 };
 
 // Layout guards: the append-without-version-bump migration is only safe while
@@ -1692,6 +1742,9 @@ void setDefaults() {
   config.dayStartEnergy = 0.0f;
   config.currentDay = 0;
   config.energyDayMagic = ENERGY_DAY_MAGIC;
+  config.hourStartEnergy = 0.0f;
+  config.currentHour = 0xFF;
+  config.energyHourMagic = ENERGY_HOUR_MAGIC;
 
   config.consumoEnabled = DEF_CONSUMO_ENABLED;
   config.consumoEnAmperios = DEF_CONSUMO_TIPO_A;
@@ -1849,6 +1902,18 @@ void loadConfig() {
   } else {
     if (isnan(config.dayStartEnergy) || config.dayStartEnergy < 0.0f) config.dayStartEnergy = 0.0f;
     if (config.currentDay > 31) config.currentDay = 0;
+  }
+
+  // Hourly-energy tracking state, appended last. Older firmware has garbage here.
+  if (config.energyHourMagic != ENERGY_HOUR_MAGIC) {
+    config.hourStartEnergy = 0.0f;
+    config.currentHour = 0xFF;
+    config.energyHourMagic = ENERGY_HOUR_MAGIC;
+    saveConfig();
+    logMessage(F("[HIST] Hourly energy tracking initialised."));
+  } else {
+    if (isnan(config.hourStartEnergy) || config.hourStartEnergy < 0.0f) config.hourStartEnergy = 0.0f;
+    if (config.currentHour > 23 && config.currentHour != 0xFF) config.currentHour = 0xFF;
   }
 }
 
@@ -4261,7 +4326,44 @@ void handleConsumo() {
     server.sendContent(buf);
   }
 
+  // Current hour's live consumption so far.
+  {
+    float thisHour = (isnan(energy) ? 0.0f : energy) - config.hourStartEnergy;
+    if (isnan(thisHour) || thisHour < 0.0f) thisHour = 0.0f;
+    char buf[64];
+    unsigned h = (config.currentHour == 0xFF) ? 0 : config.currentHour;
+    snprintf(buf, sizeof(buf), ",\"hora_actual\":{\"hora\":%u,\"kwh\":%.3f}", h, (double)thisHour);
+    server.sendContent(buf);
+  }
+
   server.sendContent("}"); // close root object
+}
+
+// --- /json_hours?y=&m=&d= --- the hourly breakdown of one specific day, streamed
+// from the hourly file. Lets the usage page drill into any stored day.
+void handleJsonHours() {
+  uint16_t qy = server.hasArg("y") ? (uint16_t)server.arg("y").toInt() : 0;
+  uint8_t  qm = server.hasArg("m") ? (uint8_t)server.arg("m").toInt() : 0;
+  uint8_t  qd = server.hasArg("d") ? (uint8_t)server.arg("d").toInt() : 0;
+  server.sendHeader("Cache-Control", "no-store");
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "application/json; charset=utf-8", "");
+  char buf[80];
+  snprintf(buf, sizeof(buf), "{\"año\":%u,\"mes\":%u,\"dia\":%u,\"horas\":[", (unsigned)qy, (unsigned)qm, (unsigned)qd);
+  server.sendContent(buf);
+  File f = LittleFS.open(ENERGY_HOURLY_FILE, "r");
+  bool first = true;
+  uint8_t b[9];
+  while (f && f.read(b, 9) == 9) {
+    uint16_t y; float kwh; memcpy(&y, b, 2); memcpy(&kwh, b + 5, 4);
+    if (y != qy || b[2] != qm || b[3] != qd) continue;
+    snprintf(buf, sizeof(buf), "%s{\"hora\":%u,\"kwh\":%.3f}", first ? "" : ",", (unsigned)b[4], (double)kwh);
+    server.sendContent(buf);
+    first = false;
+  }
+  if (f) f.close();
+  server.sendContent("]}");
+  server.sendContent("");
 }
 
 // DIAGNOSTIC ONLY. Reports the real flash chip size, the size this firmware was
@@ -4328,9 +4430,9 @@ void handleExport() {
 
   snprintf(buf, sizeof(buf),
     "\"energy\":{\"reset\":%ld,\"currentMonth\":%u,\"currentYear\":%u,\"currentDay\":%u,"
-    "\"dayStartEnergy\":%.4f,\"historyIndex\":%u,\"history\":[",
+    "\"dayStartEnergy\":%.4f,\"currentHour\":%u,\"hourStartEnergy\":%.4f,\"historyIndex\":%u,\"history\":[",
     (long)config.lastEnergyReset, config.currentMonth, config.currentYear, config.currentDay,
-    (double)config.dayStartEnergy, config.historyIndex);
+    (double)config.dayStartEnergy, config.currentHour, (double)config.hourStartEnergy, config.historyIndex);
   server.sendContent(buf);
   bool firstM = true;
   {
@@ -4438,6 +4540,8 @@ void handleImport() {
     config.currentYear = en["currentYear"] | config.currentYear;
     int cd = en["currentDay"] | config.currentDay;          config.currentDay = (cd < 0 || cd > 31) ? 0 : (uint8_t)cd;
     float dse = en["dayStartEnergy"] | (float)config.dayStartEnergy;  config.dayStartEnergy = (isnan(dse) || dse < 0.0f) ? 0.0f : dse;
+    int ch = en["currentHour"] | config.currentHour;        config.currentHour = (ch < 0 || (ch > 23 && ch != 0xFF)) ? 0xFF : (uint8_t)ch;
+    float hse = en["hourStartEnergy"] | (float)config.hourStartEnergy; config.hourStartEnergy = (isnan(hse) || hse < 0.0f) ? 0.0f : hse;
     JsonArray hist = en["history"];
     if (!hist.isNull()) {
       LittleFS.remove(ENERGY_MONTHLY_FILE);   // replace the monthly history wholesale
@@ -4580,6 +4684,7 @@ void setupWeb() {
   });
 
   server.on("/consumo", handleConsumo);
+  server.on("/json_hours", handleJsonHours);   // hourly breakdown of one day
 
   // Maintenance: correct the period label (month/year) and optional reset timestamp
   // WITHOUT touching energy or history. e.g. /fix_period?m=5&y=2026&reset=1777586400
@@ -4702,6 +4807,45 @@ void handleDayChange() {
   }
 }
 
+// Hourly energy: 9-byte records {u16 year, u8 month, u8 day, u8 hour, float kwh},
+// append-only. One record per completed hour.
+static void fsEnergyHourlyAppend(uint16_t y, uint8_t m, uint8_t d, uint8_t h, float kwh) {
+  File f = LittleFS.open(ENERGY_HOURLY_FILE, "a");
+  if (!f) return;
+  uint8_t b[9];
+  memcpy(b + 0, &y, 2); b[2] = m; b[3] = d; b[4] = h; memcpy(b + 5, &kwh, 4);
+  f.write(b, 9);
+  f.close();
+}
+
+// Detects the hour boundary and stores the finished hour's consumption. Runs
+// before handleDayChange()/handleMonthChange() so the last hour is captured with
+// the energy from BEFORE any reset. Checked every ~minute (see updateMonthly...)
+// so the total is accurate to the last minute. currentHour 0xFF = uninitialised
+// (hour 0 = midnight is a valid value, so it cannot be the sentinel).
+void handleHourChange() {
+  time_t now = getCurrentEpoch();
+  if (now < 1609459200) return;
+  struct tm* ti = localtime(&now);
+  uint8_t nH = ti->tm_hour;
+  float e = isnan(energy) ? config.hourStartEnergy : energy;
+
+  if (config.currentHour == 0xFF) {          // first run: anchor only
+    config.currentHour = nH;
+    config.hourStartEnergy = e;
+    saveConfig();
+    return;
+  }
+  if (config.currentHour != nH) {
+    float hKwh = e - config.hourStartEnergy;
+    if (isnan(hKwh) || hKwh < 0.0f) hKwh = 0.0f;   // negative = PZEM reset this hour
+    fsEnergyHourlyAppend(config.currentYear, config.currentMonth, config.currentDay, config.currentHour, hKwh);
+    config.currentHour = nH;
+    config.hourStartEnergy = e;
+    saveConfig();
+  }
+}
+
 void handleMonthChange() {
   time_t now = getCurrentEpoch();
   if (now < 1609459200) return;
@@ -4725,7 +4869,8 @@ void handleMonthChange() {
     config.currentYear = newY;
     pzem.resetEnergy();
     energy = 0;
-    config.dayStartEnergy = 0.0f;   // the new day/month starts accumulating from zero
+    config.dayStartEnergy = 0.0f;   // the new hour/day/month starts accumulating from zero
+    config.hourStartEnergy = 0.0f;
     config.lastEnergyReset = now;
     saveConfig(); // force-persist month change (rare event, must survive reboot)
   }
@@ -4733,10 +4878,13 @@ void handleMonthChange() {
 
 void updateMonthlyEnergyHistory() {
   static unsigned long lastCheck = 0;
-  // Every 10 min: tighter than the old hourly cadence so a day/month boundary is
-  // caught within ~10 min (keeps daily totals accurate to the last few minutes).
-  // Day BEFORE month: the last day of a month must be captured before the reset.
-  if (millis() - lastCheck > 600000UL) {
+  // Every minute: fine enough that the HOUR total is accurate to the last minute.
+  // Order matters: hour BEFORE day BEFORE month, so each finished period is stored
+  // with the energy value from before the next one's reset (only the month resets
+  // the PZEM). The day/month checks are cheap date comparisons; running them every
+  // minute instead of every 10 is harmless.
+  if (millis() - lastCheck > 60000UL) {
+    handleHourChange();
     handleDayChange();
     handleMonthChange();
     lastCheck = millis();
@@ -4782,6 +4930,7 @@ void setup() {
   // Anchor the day/month counters now (if the clock is up) instead of waiting for
   // the first 10-min loop tick, so "today so far" is correct from the first read
   // and a day/month boundary crossed while powered off is settled immediately.
+  handleHourChange();
   handleDayChange();
   handleMonthChange();
   logMessage(F("[SETUP] Ready. Entering loop."));
