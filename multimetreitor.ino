@@ -2160,10 +2160,17 @@ void icpLogUpdate() {
   if (above) {
     belowCount = 0;
     if (!active) {
+      // Don't open a forensic episode without a valid clock (during boot, or an
+      // NTP self-heal gap): it could not be timestamped (ts=0 junk in the
+      // calibration log) and its close would force a blocking EEPROM.commit()
+      // mid-boot, which also perturbs the WiFi/NTP the boot is still bringing up.
+      // The thermal model and buzzer keep running regardless; only the forensic
+      // record waits for the clock.
+      time_t now = getCurrentEpoch();
+      if (now <= 0) return;
       active = true;
       startMs = millis();
-      time_t now = getCurrentEpoch();
-      startTs = (now > 0) ? (uint32_t)now : 0;
+      startTs = (uint32_t)now;
       iMax = 0.0f;
       nivelMax = 0;
     }
