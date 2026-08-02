@@ -19,15 +19,16 @@ It ships with a **web configuration panel** served by the device itself and a **
 - 📊 **Real-time measurement** via the PZEM-004T v3: voltage (V), current (A), power (W), energy (kWh), frequency (Hz) and power factor.
 - 🔥 **ICP thermal model**: a first-order thermal-image model (IEC 60255-149) of the main breaker's bimetal, integrated continuously from the measured current, shown as a bar that reads empty in ordinary use and fills as the breaker approaches its trip. It warns you *before* the utility cuts your power for drawing too much. See [ICP thermal model](#-icp-thermal-model).
 - 🚨 **Configurable alerts**: ICP, overvoltage, undervoltage and consumption (by amperes or watts), with an optional **buzzer**.
-- ⚙️ **Rules / Triggers**: up to 6 user-defined rules that publish an MQTT message or call a webhook when your conditions on the live measurements (current, voltage, power, ICP load, and so on) are met, with AND/OR logic and anti-bounce persistence. Enough to shed a load before the ICP trips. See [Rules / Triggers](#-rules--triggers).
+- ⚙️ **Rules / Triggers**: up to 16 user-defined rules (up to 8 conditions and 4 actions each) that publish an MQTT message or call a webhook when your conditions on the live measurements (current, voltage, power, ICP load, and so on) are met, with AND/OR logic and anti-bounce persistence. Enough to shed a load before the ICP trips. See [Rules / Triggers](#-rules--triggers).
+- 🧾 **ICP forensic log**: every overload episode — and any *real* trip — is recorded with its timestamp, duration, peak current and peak danger level, viewable on a sortable web page with in-place, configurable record thresholds.
 - 🖥️ **16x2 I2C LCD** with metrics selectable through a bitmask, plus WiFi and MQTT status indicators.
 - 🌐 **Responsive web panel** (HTML embedded in `PROGMEM`) to configure everything without recompiling.
 - 🌍 **Bilingual UI (Spanish and English)** in both the web panel and the Rainmeter skin, with a one-click toggle. The default is Spanish.
 - 📡 **MQTT publishing** with a unified JSON payload and *retained* messages.
-- 🗓️ **Monthly consumption history** (24 months) with automatic energy reset on month change, persisted to EEPROM.
+- 🗓️ **Consumption history** — **monthly (unlimited), daily and hourly**, with automatic energy reset on month change. Shown on a web page with bar charts and a **per-day hourly drill-down** (tap a day or pick a date). See [Consumption history](#-consumption-history).
 - 🕐 **NTP synchronization** with the Spanish mainland timezone (CET and CEST, with automatic DST changes).
 - 🔄 **OTA updates** (Over-The-Air), password protected.
-- 💾 **EEPROM persistence** with integrity validation (magic plus version) and wear protection (a one-hour write cooldown for automatic tasks).
+- 💾 **Storage** — small config/calibration in EEPROM (integrity-validated: magic + version, with a one-hour write cooldown for wear); everything that grows (forensic log, energy history, rules) lives in the **~2 MB LittleFS flash filesystem**, so it is effectively unlimited.
 
 </div>
 
@@ -291,7 +292,7 @@ The threshold holds its promise across the whole range — 10 % gives 106 s, 25 
 
 <div align="justify">
 
-The thermal state survives a reboot. `computeICP()` publishes `H` (with a timestamp) to a *retained* MQTT topic, and at boot the device reads it back, applies the elapsed cooling and resumes, so a breaker that was hot before a brief power blip is not treated as cold. Real overload episodes (and probable trips) are also written to a small on-device forensic ring buffer and published over MQTT.
+The thermal state survives a reboot. `computeICP()` publishes `H` (with a timestamp) to a *retained* MQTT topic, and at boot the device reads it back, applies the elapsed cooling and resumes, so a breaker that was hot before a brief power blip is not treated as cold. Real overload episodes are also written to a **LittleFS file** (effectively unlimited) and published over MQTT; the `/icp_log` web page shows them in a sortable table, with the two record thresholds (danger % and peak A) editable in place. A **trip** is only recorded when the device actually lost power — a *cold* boot, not a soft `ESP.restart()`/OTA — with the model at its trip point **and** a trip-capable current, so ordinary reboots and firmware updates are never mislabelled as trips.
 
 That recovery needs the network, and the case where it matters most is the one that does not have it: after a general power cut the router is booting too, so there is no MQTT to read the retained state from and no NTP to measure the elapsed time with. **Measuring, modelling and warning therefore do not wait for any of it.** The PZEM read, the thermal model, the forensic log, the alert latches, the buzzer and the LCD all run from the first loop of `setup()`, and every blocking wait in the boot sequence keeps them running — WiFi (up to 2x20 s), NTP (30 s), MQTT (~5 s) and the retained-state wait (3 s) add up to a worst case of about 75 s, which is exactly the minute you switch the whole house back on at once. Only the rule engine (which fires webhooks) and the MQTT publish wait for the network.
 
@@ -300,6 +301,12 @@ Recovering the retained value and measuring are complementary rather than altern
 </div>
 
 > ℹ️ **Calibration.** The factory band is so wide that no theoretical curve is exactly right for one physical breaker. The defaults (`k = 1.07`, `tau = 384 s`, worst-case sensitivity) follow the UNE 20317 image above and deliberately err on the early side. The episode log exists so the model can later be refined against **real trips** rather than nameplate figures.
+
+<div align="center">
+  <img src="docs/icp_history.png" alt="ICP overload history page: sortable episode table with editable record thresholds" width="620">
+  <br>
+  <em>The <code>/icp_log</code> forensic page: every overload episode with its duration, peak current and peak danger level, sortable by any column. The two record thresholds (danger % and peak A) are edited in place; trips are always kept.</em>
+</div>
 
 ---
 
@@ -346,7 +353,7 @@ Actions are **edge-triggered**: the activate message is sent once when the condi
 
 - **Persistence (readings)**: from 1 to 20, and 3 by default. The condition must hold for that many consecutive readings before the edge fires, which debounces a flickering measurement. The real time this takes is the number of readings times the refresh interval.
 - **Test now**: fires the rule's actions straight away, so you can check the topic or URL without waiting for the condition to happen.
-- Up to **6** rules are stored in EEPROM next to the rest of the configuration, so they survive reboots and updates. The on/off latch itself lives only in RAM, so after a reboot a condition that is still true sends its activate message once more. That is harmless for a retained MQTT topic, but worth keeping in mind for a webhook that is not idempotent.
+- Up to **16** rules (each with up to **8** conditions and **4** actions) are stored in the **LittleFS filesystem**, so they survive reboots and updates. The on/off latch itself lives only in RAM, so after a reboot a condition that is still true sends its activate message once more. That is harmless for a retained MQTT topic, but worth keeping in mind for a webhook that is not idempotent.
 
 </div>
 
@@ -364,6 +371,30 @@ Together they keep the heater running only while there is comfortable headroom, 
 </div>
 
 > ℹ️ The editor loads and saves the whole rule table over `GET /json_rules` and `POST /save_rules`, and `POST /rule_test` backs the *Test now* button. Writes require a JSON content type as a basic CSRF guard.
+
+---
+
+## 📊 Consumption history
+
+<div align="justify">
+
+The device keeps the energy it measures at three granularities, all in the flash filesystem so none of them is capped by the tiny EEPROM sector:
+
+- **Monthly** — one total per calendar month, kept **for the life of the device** (no 24-month ceiling). The energy counter is reset on each month change.
+- **Daily** — one total per day.
+- **Hourly** — one total per hour, stored *inside* each day.
+
+The `/consumos` page renders it all as bar charts: three KPI tiles (today, this month, daily average), a monthly chart and a daily chart, with the value shown in white on each bar and the current period highlighted in blue. To see a day hour by hour, **tap its bar in the daily chart** (or pick any date in the *Hourly usage* card) and the 24 hours of that day are drawn below.
+
+</div>
+
+<div align="center">
+  <img src="docs/cons_history.png" alt="Electricity usage page: KPI tiles, monthly and daily bar charts, and a per-day hourly drill-down" width="620">
+  <br>
+  <em>The <code>/consumos</code> page: KPIs, monthly (unlimited) and daily charts, and an hourly breakdown you reach by tapping a day or picking a date.</em>
+</div>
+
+> ℹ️ Served over `GET /consumo` (monthly + daily + the live current period) and `GET /json_hours?y=&m=&d=` (one day's hours). Day/month boundaries are checked once a minute; the monthly file uses an upsert (one record per month), the daily and hourly files are append-only.
 
 ---
 
