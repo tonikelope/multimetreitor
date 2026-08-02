@@ -1297,6 +1297,8 @@ static const float MAX_CONSUMO_VAL = 10000.0f;
 #define ICP_LOG_CFG_MAGIC     0x4B   // marks the configurable log thresholds
 #define ENERGY_DAY_MAGIC      0x3C   // marks the daily-energy tracking state
 #define ENERGY_DAILY_FILE     "/energy_d.bin"   // LittleFS: one record per completed day
+#define ENERGY_MONTHLY_FILE   "/energy_m.bin"   // LittleFS: one record per month (upsert)
+static void fsEnergyMonthlyUpsert(uint16_t y, uint8_t m, float kwh);  // fwd (used by /import)
 static const int   MIN_ICP_LOG_NIVEL = 0,  MAX_ICP_LOG_NIVEL = 100;
 static const float MIN_ICP_LOG_AMP   = 0.0f, MAX_ICP_LOG_AMP  = 100.0f;
 
@@ -4142,22 +4144,24 @@ void handleConsumo() {
   server.sendContent("{\"historial\":[");
   bool first = true;
 
-  // Emit up to 24 entries if they exist (month != 0)
-  for (int i = 0; i < 24; i++) {
-    const MonthlyData &m = config.monthlyHistory[i];
-    if (m.month == 0) continue;
-
+  // Monthly history from the LittleFS file (unlimited months). 7-byte records.
+  File mf = LittleFS.open(ENERGY_MONTHLY_FILE, "r");
+  uint8_t mb[7];
+  while (mf && mf.read(mb, 7) == 7) {
+    uint16_t my; uint8_t mm; float mk;
+    memcpy(&my, mb, 2); mm = mb[2]; memcpy(&mk, mb + 3, 4);
+    if (mm == 0) continue;
     if (!first) server.sendContent(",");
     first = false;
-
     char buf[96];
     int n = snprintf(
       buf, sizeof(buf),
       "{\"mes\":%u,\"a\u00f1o\":%u,\"consumo\":\"%.2f kWh\"}",
-      (unsigned)m.month, (unsigned)m.year, (double)m.energy_kWh
+      (unsigned)mm, (unsigned)my, (double)mk
     );
     if (n > 0) server.sendContent(buf);
   }
+  if (mf) mf.close();
 
   server.sendContent("]"); // close history array
 
@@ -4290,13 +4294,19 @@ void handleExport() {
     (double)config.dayStartEnergy, config.historyIndex);
   server.sendContent(buf);
   bool firstM = true;
-  for (int i = 0; i < 24; i++) {
-    const MonthlyData &m = config.monthlyHistory[i];
-    if (m.month == 0) continue;
-    snprintf(buf, sizeof(buf), "%s{\"m\":%u,\"y\":%u,\"kwh\":%.2f}", firstM ? "" : ",",
-             m.month, m.year, (double)m.energy_kWh);
-    server.sendContent(buf);
-    firstM = false;
+  {
+    File mf = LittleFS.open(ENERGY_MONTHLY_FILE, "r");
+    uint8_t mb[7];
+    while (mf && mf.read(mb, 7) == 7) {
+      uint16_t my; uint8_t mm; float mk;
+      memcpy(&my, mb, 2); mm = mb[2]; memcpy(&mk, mb + 3, 4);
+      if (mm == 0) continue;
+      snprintf(buf, sizeof(buf), "%s{\"m\":%u,\"y\":%u,\"kwh\":%.2f}", firstM ? "" : ",",
+               mm, my, (double)mk);
+      server.sendContent(buf);
+      firstM = false;
+    }
+    if (mf) mf.close();
   }
   server.sendContent("]},\"rules\":[");
 
@@ -4391,10 +4401,11 @@ void handleImport() {
     float dse = en["dayStartEnergy"] | (float)config.dayStartEnergy;  config.dayStartEnergy = (isnan(dse) || dse < 0.0f) ? 0.0f : dse;
     JsonArray hist = en["history"];
     if (!hist.isNull()) {
-      memset(config.monthlyHistory, 0, sizeof(config.monthlyHistory));
-      int i = 0;
-      for (JsonObject m : hist) { if (i >= 24) break; config.monthlyHistory[i].month = m["m"] | 0; config.monthlyHistory[i].year = m["y"] | 0; config.monthlyHistory[i].energy_kWh = m["kwh"] | 0.0f; i++; }
-      config.historyIndex = (uint8_t)((en["historyIndex"] | i) % 24);
+      LittleFS.remove(ENERGY_MONTHLY_FILE);   // replace the monthly history wholesale
+      for (JsonObject m : hist) {
+        uint8_t mm = m["m"] | 0; if (mm == 0 || mm > 12) continue;
+        fsEnergyMonthlyUpsert(m["y"] | 0, mm, m["kwh"] | 0.0f);
+      }
     }
   }
 
@@ -4535,30 +4546,60 @@ void setupWeb() {
 }
 
 // ================== HISTORY ===================
-void guardarMesActual() {
-  if (config.currentMonth != 0 && config.currentYear != 0) {
-    // Avoid corrupting history with a failed (NaN) reading; try a fresh read first.
-    float e = energy;
-    if (isnan(e)) e = pzem.energy();
-    if (isnan(e)) {
-      logMessage(F("[HIST] Skipped save: energy reading invalid (NaN)."));
-      return;
-    }
-    bool found = false;
-    for (int i = 0; i < 24; i++) {
-      if (config.monthlyHistory[i].month == config.currentMonth && config.monthlyHistory[i].year == config.currentYear) {
-        config.monthlyHistory[i].energy_kWh = e;
-        found = true;
-        break;
+// Monthly energy history lives in a LittleFS file (unlimited months), 7-byte
+// records {u16 year, u8 month, float kwh}. Upsert: update this year/month in place
+// if present, else append — so a month is never duplicated. (File + fwd decl are
+// with the other LittleFS-path #defines near the top.)
+static void fsEnergyMonthlyUpsert(uint16_t y, uint8_t m, float kwh) {
+  File f = LittleFS.open(ENERGY_MONTHLY_FILE, "r+");
+  if (f) {
+    uint8_t b[7];
+    uint32_t pos = 0;
+    while (f.read(b, 7) == 7) {
+      uint16_t ry; uint8_t rm; memcpy(&ry, b, 2); rm = b[2];
+      if (ry == y && rm == m) {
+        f.seek(pos, SeekSet);
+        memcpy(b, &y, 2); b[2] = m; memcpy(b + 3, &kwh, 4);
+        f.write(b, 7);
+        f.close();
+        return;
       }
+      pos += 7;
     }
-    if (!found) {
-      config.monthlyHistory[config.historyIndex] = { config.currentMonth, config.currentYear, e };
-      config.historyIndex = (config.historyIndex + 1) % 24;
-    }
-    safeBackgroundSaveConfig();
-    logMessage(String(F("[HIST] Saved ")) + String(config.currentMonth) + "/" + String(config.currentYear) + " = " + String(e, 2) + " kWh");
+    f.close();
   }
+  File a = LittleFS.open(ENERGY_MONTHLY_FILE, "a");
+  if (!a) return;
+  uint8_t b[7];
+  memcpy(b, &y, 2); b[2] = m; memcpy(b + 3, &kwh, 4);
+  a.write(b, 7);
+  a.close();
+}
+
+// One-time seed of the monthly file from the legacy EEPROM ring on first upgrade.
+static void fsEnergyMonthlyMigrate() {
+  if (LittleFS.exists(ENERGY_MONTHLY_FILE)) return;
+  File f = LittleFS.open(ENERGY_MONTHLY_FILE, "w");   // create (even if empty)
+  if (f) f.close();
+  uint8_t n = 0;
+  for (int i = 0; i < 24; i++) {
+    const MonthlyData &md = config.monthlyHistory[i];
+    if (md.month == 0) continue;
+    fsEnergyMonthlyUpsert(md.year, md.month, md.energy_kWh);
+    n++;
+  }
+  logMessage(String(F("[HIST] Migrated ")) + String(n) + F(" months to LittleFS."));
+}
+
+void guardarMesActual() {
+  if (config.currentMonth == 0 || config.currentYear == 0) return;
+  // Avoid corrupting history with a failed (NaN) reading; try a fresh read first.
+  float e = energy;
+  if (isnan(e)) e = pzem.energy();
+  if (isnan(e)) { logMessage(F("[HIST] Skipped save: energy reading invalid (NaN).")); return; }
+  fsEnergyMonthlyUpsert(config.currentYear, config.currentMonth, e);
+  logMessage(String(F("[HIST] Saved ")) + String(config.currentMonth) + "/" +
+             String(config.currentYear) + " = " + String(e, 2) + " kWh");
 }
 
 // Daily energy: append one 8-byte record per COMPLETED day to a LittleFS file
@@ -4653,6 +4694,7 @@ void setupHardware() {
   if (LittleFS.begin()) {
     logMessage(F("[FS] LittleFS mounted"));
     fsLogMigrateFromEeprom();   // one-time: seed the FS forensic log from the EEPROM ring
+    fsEnergyMonthlyMigrate();   // one-time: seed the FS monthly history from the EEPROM ring
     rulesLoad();                // load rules from the FS file (migrating from EEPROM once)
   } else {
     logMessage(F("[FS] LittleFS mount FAILED"));
