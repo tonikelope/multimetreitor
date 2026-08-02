@@ -666,7 +666,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
     var rulesEditorInit = function(){
     // ===== Rule engine editor =====
     var RULES = [];
-    var RMAX = 6, RCONDS = 3;
+    var RMAX = 16, RCONDS = 8;
     var RMETRICS = [
       {es:'Corriente', en:'Current', u:'A'},
       {es:'Tensión', en:'Voltage', u:'V'},
@@ -681,7 +681,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
     function resc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
     function rMetricLabel(v){ var m=RMETRICS[v]||RMETRICS[0]; return CURRENT_LANG==='en'?m.en:m.es; }
     function rMetricUnit(v){ return (RMETRICS[v]||RMETRICS[0]).u; }
-    var RACTS=2;
+    var RACTS=4;
     function newAction(){ return {type:'mqtt',target:'',fire:'',clear:'',retain:true,post:false}; }
     function rulesNew(){ return {enabled:true,name:'',combine:'and',samples:3,conds:[{metric:0,op:1,value:0}],acts:[newAction()]}; }
 
@@ -708,17 +708,17 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       var del = total>1 ? '<button type="button" class="act-del" onclick="rulesDelAction('+i+','+aIdx+')" title="x">&#10005;</button>' : '';
       var fields;
       if(!isHook){
-        fields='<div class="rule-field"><label>'+rt('ruleTopic')+'</label><input type="text" class="act-target" maxlength="95" value="'+resc(act.target)+'" placeholder="cmnd/calentador/Power"></div>'
+        fields='<div class="rule-field"><label>'+rt('ruleTopic')+'</label><input type="text" class="act-target" maxlength="63" value="'+resc(act.target)+'" placeholder="cmnd/calentador/Power"></div>'
           +'<div class="rule-field-row">'
-          +'<div class="rule-field"><label>'+rt('ruleFire')+'</label><input type="text" class="act-fire" maxlength="63" value="'+resc(act.fire)+'" placeholder="OFF"></div>'
-          +'<div class="rule-field"><label>'+rt('ruleClear')+'</label><input type="text" class="act-clear" maxlength="63" value="'+resc(act.clear)+'" placeholder="'+rt('phOptional')+'"></div>'
+          +'<div class="rule-field"><label>'+rt('ruleFire')+'</label><input type="text" class="act-fire" maxlength="31" value="'+resc(act.fire)+'" placeholder="OFF"></div>'
+          +'<div class="rule-field"><label>'+rt('ruleClear')+'</label><input type="text" class="act-clear" maxlength="31" value="'+resc(act.clear)+'" placeholder="'+rt('phOptional')+'"></div>'
           +'</div>'
           +'<div class="rule-opts"><label><input type="checkbox" class="act-retain"'+(act.retain?' checked':'')+'> '+rt('ruleRetain')+'</label></div>';
       } else {
-        fields='<div class="rule-field"><label>'+rt('ruleUrl')+'</label><input type="text" class="act-target" maxlength="95" value="'+resc(act.target)+'" placeholder="http://192.168.1.x/..."></div>'
+        fields='<div class="rule-field"><label>'+rt('ruleUrl')+'</label><input type="text" class="act-target" maxlength="63" value="'+resc(act.target)+'" placeholder="http://192.168.1.x/..."></div>'
           +'<div class="rule-field-row">'
-          +'<div class="rule-field"><label>'+rt('ruleBody')+'</label><input type="text" class="act-fire" maxlength="63" value="'+resc(act.fire)+'"></div>'
-          +'<div class="rule-field"><label>'+rt('ruleBodyClear')+'</label><input type="text" class="act-clear" maxlength="63" value="'+resc(act.clear)+'"></div>'
+          +'<div class="rule-field"><label>'+rt('ruleBody')+'</label><input type="text" class="act-fire" maxlength="31" value="'+resc(act.fire)+'"></div>'
+          +'<div class="rule-field"><label>'+rt('ruleBodyClear')+'</label><input type="text" class="act-clear" maxlength="31" value="'+resc(act.clear)+'"></div>'
           +'</div>'
           +'<div class="rule-opts"><label><input type="checkbox" class="act-post"'+(act.post?' checked':'')+'> '+rt('rulePost')+'</label></div>';
       }
@@ -744,7 +744,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       return '<div class="rule-card'+(r.enabled?'':' disabled')+'" data-idx="'+i+'">'
         + '<div class="rule-head">'
         +   '<span class="rule-num">'+(i+1)+'</span>'
-        +   '<input type="text" class="rname" maxlength="15" value="'+resc(r.name)+'" placeholder="'+rt('ruleName')+'">'
+        +   '<input type="text" class="rname" maxlength="31" value="'+resc(r.name)+'" placeholder="'+rt('ruleName')+'">'
         +   '<label class="sw"><input type="checkbox" class="renabled"'+(r.enabled?' checked':'')+' onchange="rulesToggle('+i+')"> '+rt('ruleEnabled')+'</label>'
         +   '<button type="button" class="rule-del" onclick="rulesDel('+i+')" title="x">&#10005;</button>'
         + '</div>'
@@ -1256,9 +1256,20 @@ static const float MAX_CONSUMO_VAL = 10000.0f;
 // calentador.py hysteresis controller). Each rule = 1..MAX_CONDS conditions
 // combined with AND/OR, plus an action (publish MQTT topic or call a webhook)
 // fired on the rising edge, and an optional action on the falling edge.
-#define MAX_RULES 6
-#define MAX_CONDS 3
-#define MAX_ACTIONS 2
+// Active rule limits (rules now live in a LittleFS file + a RAM array, not in the
+// 4 KB EEPROM sector, so these are RAM-bound, not sector-bound). Sized from the
+// measured free heap (~26 KB): 16 rules x ~640 B ~= 10 KB, leaving comfortable margin.
+#define MAX_RULES 16
+#define MAX_CONDS 8
+#define MAX_ACTIONS 4
+// Legacy limits: the shape of the OLD in-EEPROM rules table (config.rules), kept
+// ONLY to read the previously stored rules once and migrate them into the file.
+// Must stay at the old values so the EEPROM layout (and its static_asserts) is
+// byte-for-byte unchanged.
+#define MAX_RULES_LEGACY 6
+#define MAX_CONDS_LEGACY 3
+#define MAX_ACTIONS_LEGACY 2
+#define RULES_FILE "/rules.bin"   // LittleFS: active rules, fixed-size records
 #define RULES_MAGIC 0x53   // marks a rules table written by this firmware (0x53: multi-action layout)
 #define ICP_MODEL_MAGIC 0x72  // marks thermal-image ICP parameters written by this firmware
                               // (0x72: cooldown default realigned from 1.5*tau1 to tau1)
@@ -1368,18 +1379,37 @@ struct RuleCond {
   float   value;
 };
 
-// One action of a rule (MQTT publish or webhook call). 226 bytes each.
+// LEGACY action/rule shapes: the exact layout of the rules that used to live in
+// the EEPROM config. Kept ONLY so loadConfig can read the previously stored rules
+// once and migrate them into the LittleFS file. Do not change — it must stay
+// byte-for-byte identical to the old on-EEPROM layout.
+struct RuleActionDefLegacy {
+  uint8_t type;
+  uint8_t flags;
+  char target[96];
+  char fire[64];
+  char clear[64];
+};
+struct RuleLegacy {
+  uint8_t enabled, combine, samples, condCount, actCount;
+  RuleCond conds[MAX_CONDS_LEGACY];
+  char name[16];
+  RuleActionDefLegacy acts[MAX_ACTIONS_LEGACY];
+};
+
+// One action of a rule (MQTT publish or webhook call). Text buffers are trimmed
+// from the legacy 96/64/64 so 16 rich rules fit in RAM; still ample for MQTT
+// topics and typical URLs/payloads.
 struct RuleActionDef {
   uint8_t type;                // RuleAction (RA_MQTT / RA_WEBHOOK)
   uint8_t flags;              // RULE_FLAG_* (retain for MQTT, POST for webhook)
-  char target[96];            // MQTT topic OR webhook URL
-  char fire[64];              // MQTT message / webhook body sent when the rule activates
-  char clear[64];             // sent when it clears (empty = do nothing on clear)
+  char target[64];            // MQTT topic OR webhook URL
+  char fire[32];              // MQTT message / webhook body sent when the rule activates
+  char clear[32];             // sent when it clears (empty = do nothing on clear)
 };
 
-// A configurable event trigger. ~500 bytes each; MAX_RULES of them live in the
-// persistent config (RAM + EEPROM). Each rule now fires up to MAX_ACTIONS
-// actions on an edge.
+// A configurable event trigger. The active table (g_rules[MAX_RULES]) lives in RAM
+// and is persisted to a LittleFS file, NOT in the EEPROM config.
 struct Rule {
   uint8_t enabled;
   uint8_t combine;              // RuleCombine (how the conditions are joined)
@@ -1387,7 +1417,7 @@ struct Rule {
   uint8_t condCount;           // 0..MAX_CONDS
   uint8_t actCount;            // 0..MAX_ACTIONS
   RuleCond conds[MAX_CONDS];
-  char name[16];               // short label for the UI / logs
+  char name[32];               // short label for the UI / logs
   RuleActionDef acts[MAX_ACTIONS];
 };
 
@@ -1425,9 +1455,10 @@ struct AppConfig {
   // without a CONFIG_VERSION bump. Garbage from old EEPROM is clamped in loadConfig().
   uint8_t lcdLang;
 
-  // Rule engine, also appended without a version bump (see loadConfig): an
-  // older config has garbage here, guarded by rulesMagic.
-  Rule rules[MAX_RULES];
+  // Legacy rule table: the rules now live in a LittleFS file, but this block is
+  // kept (byte-identical to the old layout) so every following EEPROM field keeps
+  // its offset AND so the previously stored rules can be migrated once on upgrade.
+  RuleLegacy rules[MAX_RULES_LEGACY];
   uint8_t rulesMagic;
 
   // Thermal-image model parameters, appended without a version bump (same
@@ -1530,6 +1561,11 @@ bool ruleActClearEdge[MAX_RULES] = { false };
 // Cycles the current edge has stayed only partially delivered; bounds the
 // broker-down freeze (see RULE_PENDING_MAX_CYCLES).
 uint8_t rulePendingAge[MAX_RULES] = { 0 };
+
+// The active rule table. Lives in RAM (persisted to RULES_FILE on LittleFS), NOT
+// in the EEPROM config. g_ruleCount is how many of the MAX_RULES slots are in use.
+Rule g_rules[MAX_RULES];
+uint8_t g_ruleCount = 0;
 
 float icpCarga = 0.0f;
 unsigned long lastIcpMillis = 0;
@@ -1709,37 +1745,12 @@ void loadConfig() {
   // of wiping the whole config (which would lose the energy history).
   if (config.lcdLang > LANG_EN) config.lcdLang = DEF_LCD_LANG;
 
-  // Rules table, likewise appended without a version bump. A config from older
-  // firmware has garbage here: if the marker is absent, start with an empty
-  // table instead of wiping the whole config.
+  // Legacy rules block (config.rules is now only a migration source: rulesLoad()
+  // reads it once into the LittleFS file). If the marker is absent, start empty;
+  // otherwise leave the bytes as-is — rulesMigrateFromEeprom() validates on copy.
   if (config.rulesMagic != RULES_MAGIC) {
     memset(config.rules, 0, sizeof(config.rules));
     config.rulesMagic = RULES_MAGIC;
-  } else {
-    // Defensive clamp against EEPROM corruption: keep enums in range, ensure
-    // strings are terminated, and disable any rule that no longer makes sense.
-    for (uint8_t i = 0; i < MAX_RULES; i++) {
-      Rule &r = config.rules[i];
-      if (r.condCount > MAX_CONDS) r.condCount = MAX_CONDS;
-      if (r.actCount > MAX_ACTIONS) r.actCount = MAX_ACTIONS;
-      if (r.combine > RC_OR) r.combine = RC_AND;
-      if (r.samples < RULE_MIN_SAMPLES || r.samples > RULE_MAX_SAMPLES) r.samples = RULE_DEF_SAMPLES;
-      for (uint8_t k = 0; k < r.condCount; k++) {
-        if (r.conds[k].metric >= RM_COUNT) r.conds[k].metric = RM_CURRENT;
-        if (r.conds[k].op >= RO_COUNT) r.conds[k].op = RO_GT;
-      }
-      r.name[sizeof(r.name) - 1] = '\0';
-      bool hasTarget = false;
-      for (uint8_t a = 0; a < MAX_ACTIONS; a++) {
-        RuleActionDef &act = r.acts[a];
-        if (act.type > RA_WEBHOOK) act.type = RA_MQTT;
-        act.target[sizeof(act.target) - 1] = '\0';
-        act.fire[sizeof(act.fire) - 1] = '\0';
-        act.clear[sizeof(act.clear) - 1] = '\0';
-        if (a < r.actCount && act.target[0] != '\0') hasTarget = true;
-      }
-      if (r.enabled && (r.condCount == 0 || r.actCount == 0 || !hasTarget)) r.enabled = 0;
-    }
   }
 
   // Thermal-image parameters, appended after rulesMagic. A config written by
@@ -3184,6 +3195,84 @@ static RuleEval evalRulePredicate(const Rule &r) {
   return RE_FALSE;
 }
 
+// ---- Rules storage: a LittleFS file, not the EEPROM config ----
+// Fixed-size binary: a 3-byte header {magic, version, count} then `count` raw Rule
+// records. Device-local (same struct writes and reads it), so a raw dump is fine;
+// the version guards against loading a file written by an older Rule layout.
+#define RULES_FILE_MAGIC 0xA5
+#define RULES_FILE_VER   1
+
+void rulesSave() {
+  File f = LittleFS.open(RULES_FILE, "w");
+  if (!f) { logMessage(F("[RULES] save failed (open)")); return; }
+  uint8_t hdr[3] = { RULES_FILE_MAGIC, RULES_FILE_VER, g_ruleCount };
+  f.write(hdr, 3);
+  for (uint8_t i = 0; i < g_ruleCount && i < MAX_RULES; i++)
+    f.write((const uint8_t*)&g_rules[i], sizeof(Rule));
+  f.close();
+}
+
+// One-time seed of g_rules from the legacy EEPROM table (config.rules), widening
+// each rule into the new (bigger) shape. Only what was actually stored is copied.
+static void rulesMigrateFromEeprom() {
+  memset(g_rules, 0, sizeof(g_rules));
+  g_ruleCount = 0;
+  if (config.rulesMagic != RULES_MAGIC) return;   // nothing valid to migrate
+  for (uint8_t i = 0; i < MAX_RULES_LEGACY && g_ruleCount < MAX_RULES; i++) {
+    const RuleLegacy &L = config.rules[i];
+    Rule &r = g_rules[g_ruleCount];
+    r.enabled = L.enabled; r.combine = (L.combine > RC_OR) ? RC_AND : L.combine;
+    r.samples = (L.samples < RULE_MIN_SAMPLES || L.samples > RULE_MAX_SAMPLES) ? RULE_DEF_SAMPLES : L.samples;
+    r.condCount = L.condCount > MAX_CONDS_LEGACY ? MAX_CONDS_LEGACY : L.condCount;
+    r.actCount  = L.actCount  > MAX_ACTIONS_LEGACY ? MAX_ACTIONS_LEGACY : L.actCount;
+    for (uint8_t k = 0; k < r.condCount; k++) r.conds[k] = L.conds[k];
+    strlcpy(r.name, L.name, sizeof(r.name));
+    for (uint8_t a = 0; a < r.actCount; a++) {
+      r.acts[a].type  = (L.acts[a].type > RA_WEBHOOK) ? RA_MQTT : L.acts[a].type;
+      r.acts[a].flags = L.acts[a].flags;
+      strlcpy(r.acts[a].target, L.acts[a].target, sizeof(r.acts[a].target));
+      strlcpy(r.acts[a].fire,   L.acts[a].fire,   sizeof(r.acts[a].fire));
+      strlcpy(r.acts[a].clear,  L.acts[a].clear,  sizeof(r.acts[a].clear));
+    }
+    g_ruleCount++;
+  }
+}
+
+// Loads the active rules into g_rules: from the LittleFS file if present and of a
+// known version, otherwise a one-time migration from the legacy EEPROM table.
+void rulesLoad() {
+  memset(g_rules, 0, sizeof(g_rules));
+  g_ruleCount = 0;
+  bool loaded = false;
+  File f = LittleFS.open(RULES_FILE, "r");
+  if (f) {
+    uint8_t hdr[3];
+    if (f.read(hdr, 3) == 3 && hdr[0] == RULES_FILE_MAGIC && hdr[1] == RULES_FILE_VER) {
+      uint8_t cnt = hdr[2] > MAX_RULES ? MAX_RULES : hdr[2];
+      uint8_t n = 0;
+      for (uint8_t i = 0; i < cnt; i++) {
+        if (f.read((uint8_t*)&g_rules[n], sizeof(Rule)) != (int)sizeof(Rule)) break;
+        n++;
+      }
+      g_ruleCount = n;
+      loaded = true;
+    }
+    f.close();
+  }
+  if (!loaded) {
+    rulesMigrateFromEeprom();
+    rulesSave();
+    logMessage(String(F("[RULES] Migrated ")) + String(g_ruleCount) + F(" rules to LittleFS."));
+  }
+  // Drop trailing empty rules (e.g. the blank tail of the migrated 6-slot table)
+  // so the editor shows only real rules.
+  while (g_ruleCount > 0) {
+    const Rule &r = g_rules[g_ruleCount - 1];
+    if (!r.enabled && r.condCount == 0 && r.actCount == 0 && r.name[0] == '\0') g_ruleCount--;
+    else break;
+  }
+}
+
 // Evaluates every enabled rule once per cycle. Edge detection (unchanged, audited
 // correct): `samples` consecutive TRUE readings to activate and `samples`
 // consecutive FALSE to clear; UNKNOWN (NaN) holds both latch and counter. On a
@@ -3197,7 +3286,7 @@ void evaluateRules() {
   uint8_t webhookBudget = WEBHOOK_MAX_PER_CYCLE;
   for (uint8_t n = 0; n < MAX_RULES; n++) {
     uint8_t i = (uint8_t)((startIdx + n) % MAX_RULES);
-    Rule &r = config.rules[i];
+    Rule &r = g_rules[i];
     if (!r.enabled || r.condCount == 0 || r.actCount == 0) {
       ruleLatch[i] = false; ruleSampleCount[i] = 0; ruleActPending[i] = 0; rulePendingAge[i] = 0; continue;
     }
@@ -3809,8 +3898,8 @@ void handleJsonAlerts() {
 void handleJsonRules() {
   DynamicJsonDocument doc(8192);
   JsonArray arr = doc.to<JsonArray>();
-  for (uint8_t i = 0; i < MAX_RULES; i++) {
-    Rule &r = config.rules[i];
+  for (uint8_t i = 0; i < g_ruleCount && i < MAX_RULES; i++) {
+    Rule &r = g_rules[i];
     JsonObject o = arr.createNestedObject();
     o["enabled"] = (bool)r.enabled;
     o["name"]    = r.name;
@@ -3975,38 +4064,35 @@ void handleSaveRules() {
   DeserializationError err = deserializeJson(doc, body);
   if (err || !doc.is<JsonArray>()) { server.send(400, "application/json", "{\"ok\":false,\"error\":\"json\"}"); return; }
 
-  // Parse and store ONE rule at a time (a full 6-rule snapshot would be ~3KB on
-  // the ~4KB stack). For each slot, reset the runtime state only if the rule's
-  // definition actually changed, so editing one rule cannot swallow another
-  // rule's pending activate/clear.
+  // Parse into g_rules one at a time (~640 B each on the ~4 KB stack). Reset the
+  // runtime state of a slot only if the rule's definition actually changed, so
+  // editing one rule cannot swallow another rule's pending activate/clear.
   uint8_t i = 0;
   bool changed = false;
   for (JsonObject o : doc.as<JsonArray>()) {
     if (i >= MAX_RULES) break;
     Rule nr;
     parseRuleFromJson(o, nr);
-    if (!rulesEqual(config.rules[i], nr)) {
+    if (i >= g_ruleCount || !rulesEqual(g_rules[i], nr)) {
       ruleLatch[i] = false; ruleSampleCount[i] = 0; ruleActPending[i] = 0; rulePendingAge[i] = 0;
-      config.rules[i] = nr;
+      g_rules[i] = nr;
       changed = true;
     }
     i++;
   }
-  // Zero any remaining slots, resetting their runtime state if they had content.
+  uint8_t newCount = i;
+  // Clear any slots beyond the new count, resetting their runtime state.
   for (; i < MAX_RULES; i++) {
-    Rule &r = config.rules[i];
-    if (r.enabled || r.condCount || r.actCount) {
+    if (g_rules[i].enabled || g_rules[i].condCount || g_rules[i].actCount) {
       ruleLatch[i] = false; ruleSampleCount[i] = 0; ruleActPending[i] = 0; rulePendingAge[i] = 0;
-      memset(&r, 0, sizeof(Rule));
+      memset(&g_rules[i], 0, sizeof(Rule));
       changed = true;
     }
   }
-  // Dirty-check: only burn a full-sector EEPROM write (the blob also holds the
-  // 24-month energy history) when the table actually changed. An identical
-  // re-save is then a no-op, and a power loss can only ever corrupt the blob
-  // during a write that was carrying a real change.
-  config.rulesMagic = RULES_MAGIC;
-  if (changed) saveConfig();
+  if (newCount != g_ruleCount) { changed = true; g_ruleCount = newCount; }
+  // Persist to the LittleFS rules file only on a real change (no EEPROM wear, and
+  // the rules no longer share a sector with the energy history).
+  if (changed) rulesSave();
   server.send(200, "application/json", "{\"ok\":true}");
 }
 
@@ -4214,8 +4300,8 @@ void handleExport() {
   }
   server.sendContent("]},\"rules\":[");
 
-  for (uint8_t r = 0; r < MAX_RULES; r++) {
-    const Rule &R = config.rules[r];
+  for (uint8_t r = 0; r < g_ruleCount && r < MAX_RULES; r++) {
+    const Rule &R = g_rules[r];
     json_escape(R.name, e1, sizeof(e1));
     snprintf(buf, sizeof(buf),
       "%s{\"enabled\":%u,\"combine\":%u,\"samples\":%u,\"name\":\"%s\",\"conds\":[",
@@ -4314,11 +4400,11 @@ void handleImport() {
 
   JsonArray rl = doc["rules"];
   if (!rl.isNull()) {
-    memset(config.rules, 0, sizeof(config.rules));
+    memset(g_rules, 0, sizeof(g_rules));
     int r = 0;
     for (JsonObject ro : rl) {
       if (r >= MAX_RULES) break;
-      Rule &R = config.rules[r];
+      Rule &R = g_rules[r];
       R.enabled = (ro["enabled"] | 0) ? 1 : 0;
       R.combine = ro["combine"] | 0;
       R.samples = ro["samples"] | RULE_DEF_SAMPLES;
@@ -4331,9 +4417,10 @@ void handleImport() {
       R.actCount = ac;
       r++;
     }
-    // Same defensive clamp loadConfig() applies, so the imported table is sane.
-    for (uint8_t i = 0; i < MAX_RULES; i++) {
-      Rule &r2 = config.rules[i];
+    g_ruleCount = (uint8_t)r;
+    // Same defensive clamp loadConfig() applied, so the imported table is sane.
+    for (uint8_t i = 0; i < g_ruleCount; i++) {
+      Rule &r2 = g_rules[i];
       if (r2.condCount > MAX_CONDS) r2.condCount = MAX_CONDS;
       if (r2.actCount > MAX_ACTIONS) r2.actCount = MAX_ACTIONS;
       if (r2.combine > RC_OR) r2.combine = RC_AND;
@@ -4344,6 +4431,8 @@ void handleImport() {
       for (uint8_t a = 0; a < MAX_ACTIONS; a++) { RuleActionDef &act = r2.acts[a]; if (act.type > RA_WEBHOOK) act.type = RA_MQTT; act.target[sizeof(act.target) - 1] = '\0'; act.fire[sizeof(act.fire) - 1] = '\0'; act.clear[sizeof(act.clear) - 1] = '\0'; if (a < r2.actCount && act.target[0] != '\0') hasTarget = true; }
       if (r2.enabled && (r2.condCount == 0 || r2.actCount == 0 || !hasTarget)) r2.enabled = 0;
     }
+    for (uint8_t i = 0; i < MAX_RULES; i++) { ruleLatch[i] = false; ruleSampleCount[i] = 0; ruleActPending[i] = 0; rulePendingAge[i] = 0; }
+    rulesSave();
   }
 
   // The forensic log is not part of the backup (it lives in its own LittleFS
@@ -4564,8 +4653,10 @@ void setupHardware() {
   if (LittleFS.begin()) {
     logMessage(F("[FS] LittleFS mounted"));
     fsLogMigrateFromEeprom();   // one-time: seed the FS forensic log from the EEPROM ring
+    rulesLoad();                // load rules from the FS file (migrating from EEPROM once)
   } else {
     logMessage(F("[FS] LittleFS mount FAILED"));
+    rulesMigrateFromEeprom();   // FS down: at least run the legacy rules from RAM
   }
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
