@@ -54,6 +54,11 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
     .section { margin-bottom: 20px; }
     .alert-row { display: flex; align-items: center; gap: 12px; margin-bottom:10px; }
     .alert-row input[type="number"] { width: 80px; }
+    .pzem-spin { display:inline-flex; align-items:center; gap:6px; vertical-align:middle; }
+    .pzem-spin input[type="number"] { width:92px; text-align:center; }
+    .pzem-step { width:34px; height:34px; border:1px solid #bbf780; background:#eef7e2; color:#2b7a2b; border-radius:8px; font-size:1.3em; font-weight:bold; line-height:1; cursor:pointer; padding:0; }
+    .pzem-step:hover { background:#e0efcd; }
+    .pzem-step:active { transform:translateY(1px); }
     .alert-row .unit { margin-left:2px; color:#666; }
     .icp-group { background: #f7ffd7; border-radius:8px; padding:10px 14px; margin-bottom: 5px; border:1px solid #bbf780;}
     .icp-label { font-weight:bold; color:#2b4; }
@@ -237,6 +242,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       <button type="button" class="tab-btn" data-tab="config" onclick="showTab('config')" data-i18n="tabConfig">Config</button>
     </div>
     <form method='POST' onsubmit="return validateForm();">
+      <div class="desc pane-config" style="display:none;margin-top:4px"><span data-i18n="refreshInterval">Intervalo de lectura PZEM (ms):</span> <span class="pzem-spin"><button type="button" class="pzem-step" onclick="stepPzem(-1)" aria-label="menos">&minus;</button><input type="number" id="pzemInt" min="500" max="60000" step="500" name="refresh_interval" value="%REFRESH_INTERVAL%" required><button type="button" class="pzem-step" onclick="stepPzem(1)" aria-label="mas">&plus;</button></span></div>
       <div class='mqtt-section pane-config' style="display:none">
         <h2 data-i18n="mqttBroker">Broker MQTT</h2>
         <label><span data-i18n="brokerIp">IP o nombre del broker MQTT:</span>
@@ -246,11 +252,15 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         <div class="desc"><span data-i18n="clientName">Nombre cliente MQTT:</span>
           <input type="text" name="mqtt_client" value="%MQTT_CLIENT%" maxlength="31" required style="width:150px;">
         </div>
-        <div class="desc"><span data-i18n="refreshInterval">Intervalo refresco (ms):</span> <input type="number" min="1000" max="60000" step="500" name="refresh_interval" value="%REFRESH_INTERVAL%" required></div>
         <div class="topics-list">
         <b data-i18n="topicsPublished">Topics donde se publica:</b>
         <ul style="margin:0 0 0 16px;padding:0;">
           <li>electricidad/casa/estado</li>
+          <li>electricidad/casa/icp</li>
+          <li>electricidad/casa/icp_evento</li>
+          <li>electricidad/casa/alertas_config</li>
+          <li>multimetreitor/status</li>
+          <li>multimetreitor/serial</li>
         </ul>
         <div style="margin-top:7px;color:#357aff;font-size:0.97em;">
           <b>JSON:</b>
@@ -336,7 +346,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
           <label><input type='checkbox' name='lcd_icp' %LCD_ICP%><span data-i18n="icp">ICP</span></label>
         </div>
       </div>
-      <div class="desc pane-config" style="display:none"><span data-i18n="countingSince">Contando energía desde hace:</span> <span id="lastResetTime">%LAST_RESET_TIME%</span></div>
+      <div class="desc pane-config" style="display:none"><span data-i18n="uptimeLabel">Uptime (desde el último reinicio):</span> <span id="uptimeVal">&hellip;</span></div>
       <div class="form-actions pane-config" style="display:none">
         <button type="button" onclick="doExportConfig()" class="action-btn io" data-i18n="exportCfg">Exportar configuraci&oacute;n</button>
         <button type="button" onclick="document.getElementById('cfgFile').click()" class="action-btn io" data-i18n="importCfg">Importar configuraci&oacute;n</button>
@@ -372,7 +382,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
     var I18N = {
       es: {
         mqttBroker:"Broker MQTT", brokerIp:"IP o nombre del broker MQTT:", clientName:"Nombre cliente MQTT:",
-        refreshInterval:"Intervalo refresco (ms):", topicsPublished:"Topics donde se publica:",
+        refreshInterval:"Intervalo de lectura PZEM (ms):", topicsPublished:"Topics donde se publica:",
         alerts:"Alertas", soundAlert:"Alerta sonora (buzzer)", icpThermalAlert:"Alerta ICP térmico",
         enableIcp:"Activar alerta ICP", nominalCurrent:"Intensidad nominal:", heatThreshold:"Umbral de aviso:",
         warnWindow:"Margen de aviso:",
@@ -387,7 +397,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         frequency:"Frecuencia", current:"Corriente", power:"Potencia", energy:"Energía",
         powerFactor:"Factor Potencia", icp:"ICP", viewIcpLog:"Ver historial de sobrecargas",
         logFromLevel:"Registrar en log desde nivel:", logOrAmp:"o corriente:",
-        countingSince:"Contando energía desde hace:", wipeMemory:"Borrar memoria", resetDeviceBtn:"Resetear dispositivo",
+        uptimeLabel:"Uptime (desde el último reinicio):", wipeMemory:"Borrar memoria", resetDeviceBtn:"Resetear dispositivo",
         saveChanges:"Guardar cambios", connected:"(CONECTADO)", disconnected:"(NO CONECTADO)",
         confirmWipe:"¿Seguro que quieres borrar por completo la EEPROM?\nEsto restaurará todos los valores de fábrica y perderás la configuración.",
         wipingEeprom:"Borrando EEPROM...", resettingDevice:"Reiniciando dispositivo...", checkNumbers:"Revisa los valores numéricos.",
@@ -409,7 +419,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       },
       en: {
         mqttBroker:"MQTT Broker", brokerIp:"MQTT broker IP or hostname:", clientName:"MQTT client name:",
-        refreshInterval:"Refresh interval (ms):", topicsPublished:"Topics published to:",
+        refreshInterval:"PZEM read interval (ms):", topicsPublished:"Topics published to:",
         alerts:"Alerts", soundAlert:"Sound alert (buzzer)", icpThermalAlert:"Thermal ICP alert",
         enableIcp:"Enable ICP alert", nominalCurrent:"Nominal current:", heatThreshold:"Warning threshold:",
         warnWindow:"Warning window:",
@@ -424,7 +434,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         frequency:"Frequency", current:"Current", power:"Power", energy:"Energy",
         powerFactor:"Power Factor", icp:"ICP", viewIcpLog:"View overload history",
         logFromLevel:"Log episodes from level:", logOrAmp:"or current:",
-        countingSince:"Counting energy since:", wipeMemory:"Wipe memory", resetDeviceBtn:"Reset device",
+        uptimeLabel:"Uptime (since last reboot):", wipeMemory:"Wipe memory", resetDeviceBtn:"Reset device",
         saveChanges:"Save changes", connected:"(CONNECTED)", disconnected:"(NOT CONNECTED)",
         confirmWipe:"Are you sure you want to completely wipe the EEPROM?\nThis will restore all factory defaults and you will lose the configuration.",
         wipingEeprom:"Wiping EEPROM...", resettingDevice:"Restarting device...", checkNumbers:"Please check the numeric values.",
@@ -488,6 +498,13 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       var btns = document.querySelectorAll('.tab-btn');
       for (var i=0;i<btns.length;i++){ btns[i].classList.toggle('on', btns[i].getAttribute('data-tab')===name); }
     };
+    window.stepPzem = function(dir){
+      var el = document.getElementById('pzemInt'); if(!el) return;
+      var v = parseInt(el.value, 10); if(isNaN(v)) v = 500;
+      v += dir * 500;
+      if(v < 500) v = 500; if(v > 60000) v = 60000;
+      el.value = v;
+    };
     window.doExportConfig = function(){ window.location = '/export'; };
     window.doImportConfig = function(inp){
       var f = inp.files && inp.files[0]; if(!f) return;
@@ -507,15 +524,16 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       // The device-saved language (rendered server-side) is the source of truth,
       // so a fresh browser loads the language stored on the device.
       applyLang('%LANG%'==='en'?'en':'es');
-       function updateLastResetTime() {
-        fetch('/last_reset')
+       function updateUptime() {
+        fetch('/uptime')
           .then(r => r.text())
           .then(t => {
-            document.getElementById('lastResetTime').textContent = t;
-          });
+            var e = document.getElementById('uptimeVal');
+            if (e) e.textContent = t;
+          }).catch(function(){});
       }
-      setInterval(updateLastResetTime, 30000); 
-      updateLastResetTime(); 
+      setInterval(updateUptime, 15000);
+      updateUptime();
 
       window.toggleCurve = function() {
         var box = document.getElementById('icp-curve-box');
@@ -1156,8 +1174,7 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
       <h2 id="hHour">Consumo por hora</h2>
       <div style="margin:0 0 12px 0;font-size:0.92em;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <span id="hourPickLbl">Ver un día:</span>
-        <input type="date" id="dpick" style="padding:3px 6px;border:1px solid #bbf780;border-radius:6px;font-size:0.95em">
-        <button type="button" id="hourGo" onclick="pickDay()" style="background:#1e90ff;color:#fff;border:none;border-radius:6px;padding:4px 13px;cursor:pointer;font-size:0.9em">Ver</button>
+        <input type="date" id="dpick" onchange="pickDay()" style="padding:3px 6px;border:1px solid #bbf780;border-radius:6px;font-size:0.95em">
       </div>
       <div class="chart" id="chHour"><div class="empty" id="hourHint">&hellip;</div></div>
     </div>
@@ -1168,7 +1185,7 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
     var T={
       es:{title:'Consumo eléctrico',back:'← Volver',refresh:'Actualizar',dl:'Descargar',
           month:'Consumo mensual',day:'Consumo diario (últimos {n} días)',
-          hour:'Consumo por hora',hourPick:'Ver un día:',hourGo:'Ver',
+          hour:'Consumo por hora',hourPick:'Ver un día:',
           hourHint:'Elige un día arriba, o pulsa una barra del gráfico diario.',
           hourOf:'Horas del {d}/{m}/{y}',hourNone:'Sin datos horarios para ese día.',
           kToday:'Hoy',kMonth:'Este mes',kAvg:'Media diaria',
@@ -1176,7 +1193,7 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
           months:['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic']},
       en:{title:'Electricity usage',back:'← Back',refresh:'Refresh',dl:'Download',
           month:'Monthly usage',day:'Daily usage (last {n} days)',
-          hour:'Hourly usage',hourPick:'View a day:',hourGo:'View',
+          hour:'Hourly usage',hourPick:'View a day:',
           hourHint:'Pick a day above, or tap a bar in the daily chart.',
           hourOf:'Hours of {d}/{m}/{y}',hourNone:'No hourly data for that day.',
           kToday:'Today',kMonth:'This month',kAvg:'Daily avg',
@@ -1197,7 +1214,6 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
       document.getElementById('hDay').textContent=L.day.replace('{n}',DAYS_SHOWN);
       document.getElementById('hHour').textContent=L.hour;
       document.getElementById('hourPickLbl').textContent=L.hourPick;
-      document.getElementById('hourGo').textContent=L.hourGo;
       document.getElementById('hourHint').textContent=L.hourHint;
     }
     function kpi(lbl,val){return '<div class="kpi"><div class="lbl">'+lbl+'</div><div class="val">'+val+' <small>kWh</small></div></div>';}
@@ -1375,7 +1391,7 @@ static const float ICP_SENS_FLOOR_MAX = 0.922f;
 #define CONFIG_VERSION_V11 11   // previous schema (pre-cleanup layout); migrated once on upgrade
 
 // ================== VALIDATION LIMITS ==========
-static const unsigned long MIN_REFRESH_MS = 1000, MAX_REFRESH_MS = 60000;
+static const unsigned long MIN_REFRESH_MS = 500, MAX_REFRESH_MS = 60000;
 static const float MIN_ICP_NOMINAL_A = 5.0f, MAX_ICP_NOMINAL_A = 80.0f;
 static const int MIN_ICP_UMBRAL = 10, MAX_ICP_UMBRAL = 100;
 static const int MIN_ICP_COOLDOWN_S = 60, MAX_ICP_COOLDOWN_S = 7200;
@@ -3922,6 +3938,20 @@ static void formatElapsedTimeTo(char* buf, size_t n, time_t timestamp) {
   snprintf(buf, n, "%ldd", (long)(diff / 86400));
 }
 
+// Device uptime since the last boot, from millis(). Wraps only after ~49.7 days of
+// continuous uptime, far beyond this device's typical reboot cadence.
+static void formatUptimeTo(char* buf, size_t n) {
+  if (!buf || n == 0) return;
+  uint32_t s = (uint32_t)(millis() / 1000UL);
+  uint32_t d = s / 86400UL; s %= 86400UL;
+  uint32_t h = s / 3600UL;  s %= 3600UL;
+  uint32_t m = s / 60UL;    s %= 60UL;
+  if (d > 0)      snprintf(buf, n, "%lud %luh %lum", (unsigned long)d, (unsigned long)h, (unsigned long)m);
+  else if (h > 0) snprintf(buf, n, "%luh %lum %lus", (unsigned long)h, (unsigned long)m, (unsigned long)s);
+  else if (m > 0) snprintf(buf, n, "%lum %lus", (unsigned long)m, (unsigned long)s);
+  else            snprintf(buf, n, "%lus", (unsigned long)s);
+}
+
 // JSON escaping to avoid invalid payloads
 static size_t json_escape(const char* src, char* dst, size_t n) {
   if (!src || !dst || n == 0) return 0;
@@ -4730,6 +4760,12 @@ void setupWeb() {
 
   server.on("/last_reset", []() {
     server.send(200, "text/plain; charset=utf-8", formatElapsedTime(config.lastEnergyReset));
+  });
+
+  server.on("/uptime", []() {
+    char buf[40]; formatUptimeTo(buf, sizeof(buf));
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "text/plain; charset=utf-8", buf);
   });
 
   // Persist the LCD/web message language. Called by the web UI language toggle.
