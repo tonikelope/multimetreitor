@@ -110,6 +110,8 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
     .action-btn.reset:hover { background: #c33; }
     input[type="submit"] { background: #357aff; }
     input[type="submit"]:hover { background: #1c54b2; }
+    .action-btn.io { background: #2f8fbf; }
+    .action-btn.io:hover { background: #216d94; }
     .mqtt-section { margin-bottom:18px;}
     .topics-list { background:#f2f2f7; border:1px solid #ddd; border-radius:6px; padding:8px 10px; font-size:0.98em; color:#226; margin:7px 0 0 0;}
     .mqtt-status { font-weight:bold; margin-left:8px;}
@@ -147,12 +149,14 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
     }
     .tab-btn.on { color:#357aff; border-bottom-color:#357aff; }
     .tab-btn:hover { color:#224; }
-    .rules-count-line { text-align:right; margin:-4px 0 10px 0; }
-    .rules-count { font-size:0.85em; font-weight:bold; color:#5566a0; background:#eef2fb; border-radius:10px; padding:2px 11px; }
-    .rules-count.full { color:#c33; background:#fde7e7; }
+    .rules-nav { display:flex; align-items:center; justify-content:center; gap:14px; margin:2px 0 12px 0; }
+    .rules-page-btn { background:#5566cc; color:#fff; border:none; border-radius:8px; width:40px; height:32px; font-size:1.2em; font-weight:bold; line-height:1; cursor:pointer; }
+    .rules-page-btn:hover { background:#3a48a0; }
+    .rules-page-btn:disabled { background:#b9c0d8; cursor:default; }
+    .rules-page-ind { font-size:0.92em; font-weight:bold; color:#5566a0; min-width:54px; text-align:center; font-variant-numeric:tabular-nums; }
 
     /* ===== Rule engine editor ===== */
-    .rules-intro { color:#555; font-size:0.97em; margin-bottom:12px; }
+    .rules-intro { color:#555; font-size:0.97em; margin-bottom:12px; text-align:justify; }
     .rule-card {
       border:1px solid #d6dcf0; border-left:4px solid #357aff; border-radius:10px;
       background:#fbfcff; padding:12px 13px; margin-bottom:14px;
@@ -227,12 +231,13 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       <div class="lcd-frame"></div>
     </div>
     <div class="tabbar">
-      <button type="button" class="tab-btn on" data-tab="config" onclick="showTab('config')" data-i18n="tabConfig">Configuraci&oacute;n</button>
-      <button type="button" class="tab-btn" data-tab="rules" onclick="showTab('rules')" data-i18n="tabRules">&#9889; Reglas</button>
+      <button type="button" class="tab-btn on" data-tab="alertas" onclick="showTab('alertas')" data-i18n="tabAlerts">Alertas</button>
+      <button type="button" class="tab-btn" data-tab="rules" onclick="showTab('rules')" data-i18n="tabRules">Reglas</button>
+      <button type="button" class="tab-btn" data-tab="consumo" onclick="showTab('consumo')" data-i18n="tabConsumo">Consumo</button>
+      <button type="button" class="tab-btn" data-tab="config" onclick="showTab('config')" data-i18n="tabConfig">Config</button>
     </div>
-    <div id="tab-config">
     <form method='POST' onsubmit="return validateForm();">
-      <div class='mqtt-section'>
+      <div class='mqtt-section pane-config' style="display:none">
         <h2 data-i18n="mqttBroker">Broker MQTT</h2>
         <label><span data-i18n="brokerIp">IP o nombre del broker MQTT:</span>
           <input type="text" name="mqtt_broker" value="%MQTT_BROKER%" pattern=".{7,31}" required style="width:190px;">
@@ -253,7 +258,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         </div>
       </div>
       </div>
-      <div class='section'>
+      <div class='section pane-alertas'>
         <h2 data-i18n="alerts">Alertas</h2>
         <div class="alert-row">
           <label><input type="checkbox" name="alertaSonora" %ALERTA_SONORA%> <span data-i18n="soundAlert">Alerta sonora (buzzer)</span></label>
@@ -293,7 +298,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
             <button type="button" onclick="restaurarCurva()" class="icp-curve-box-btn" style="background:#2b4;margin-top:13px;" data-i18n="restoreDefaults">Restaurar valores por defecto</button>
           </div>
           <div class="icp-row" style="margin-top:10px;">
-            <a href="/icp_log" target="_blank" style="color:#1e90ff;text-decoration:none;font-weight:bold;" data-i18n="viewIcpLog">Ver historial de sobrecargas</a>
+            <a href="/icp_log" style="color:#1e90ff;text-decoration:none;font-weight:bold;" data-i18n="viewIcpLog">Ver historial de sobrecargas</a>
           </div>
         </div>
         <div class="consumo-row">
@@ -315,7 +320,10 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
           <span class="unit">V</span>
         </div>
       </div>
-      <div class='section'>
+      <div class="form-actions pane-alertas">
+        <input type='submit' id="saveAlertsBtn" value='Guardar alertas'>
+      </div>
+      <div class='section pane-config' style="display:none">
         <h2>LCD</h2>
         <div class="desc" data-i18n="selectMetrics">Selecciona qué métricas quieres mostrar en pantalla:</div>
         <div class="lcd-row-metrics">
@@ -328,19 +336,29 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
           <label><input type='checkbox' name='lcd_icp' %LCD_ICP%><span data-i18n="icp">ICP</span></label>
         </div>
       </div>
-      <div class="desc"><a href="/consumos" target="_blank" style="color: #1e90ff; text-decoration: none; font-weight: bold;" data-i18n="viewHistory">Ver Historial de Consumo</a></div>
-      <div class="desc"><span data-i18n="countingSince">Contando energía desde hace:</span> <span id="lastResetTime">%LAST_RESET_TIME%</span></div>
-      <div class="form-actions">
+      <div class="desc pane-config" style="display:none"><span data-i18n="countingSince">Contando energía desde hace:</span> <span id="lastResetTime">%LAST_RESET_TIME%</span></div>
+      <div class="form-actions pane-config" style="display:none">
+        <button type="button" onclick="doExportConfig()" class="action-btn io" data-i18n="exportCfg">Exportar configuraci&oacute;n</button>
+        <button type="button" onclick="document.getElementById('cfgFile').click()" class="action-btn io" data-i18n="importCfg">Importar configuraci&oacute;n</button>
+        <input type="file" id="cfgFile" accept=".json,application/json" style="display:none" onchange="doImportConfig(this)">
+      </div>
+      <div class="form-actions pane-config" style="display:none">
         <button type="button" onclick="wipeEEPROM()" class="action-btn eeprom" data-i18n="wipeMemory">Borrar memoria</button>
         <button type="button" onclick="resetDevice()" class="action-btn reset" data-i18n="resetDeviceBtn">Resetear dispositivo</button>
         <input type='submit' id="saveChangesBtn" value='Guardar cambios'>
       </div>
     </form>
+    <div id="tab-consumo" style="display:none;">
+      <iframe id="consumoFrame" data-src="/consumos" scrolling="no" onload="sizeConsumoFrame()" style="width:100%;border:0;min-height:420px;display:block;"></iframe>
     </div>
     <div class='section' id="tab-rules" style="display:none;">
       <h2 data-i18n="rulesTitle">&#9889; Reglas / Disparadores</h2>
       <div class="rules-intro" data-i18n="rulesIntro">Dispara acciones cuando se cumplen una o varias condiciones sobre las medidas (con persistencia anti-rebote). Cada regla puede publicar en un topic MQTT o llamar a una URL (webhook).</div>
-      <div class="rules-count-line"><span id="rules-count" class="rules-count"></span></div>
+      <div id="rules-nav" class="rules-nav" style="display:none;">
+        <button type="button" id="rules-prev" class="rules-page-btn" onclick="rulesPage(-1)" title="Anterior">&#8249;</button>
+        <span id="rules-page-ind" class="rules-page-ind"></span>
+        <button type="button" id="rules-next" class="rules-page-btn" onclick="rulesPage(1)" title="Siguiente">&#8250;</button>
+      </div>
       <div id="rules-list"></div>
       <div class="rules-actions">
         <button type="button" class="action-btn rules-add" onclick="rulesAdd()" data-i18n="ruleAdd">&#43; A&ntilde;adir regla</button>
@@ -367,13 +385,14 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         overvoltageAlert:"Alerta por <b>sobretensión</b>", undervoltageAlert:"Alerta por <b>subtensión</b>",
         selectMetrics:"Selecciona qué métricas quieres mostrar en pantalla:", voltage:"Voltaje",
         frequency:"Frecuencia", current:"Corriente", power:"Potencia", energy:"Energía",
-        powerFactor:"Factor Potencia", icp:"ICP", viewHistory:"Ver Historial de Consumo", viewIcpLog:"Ver historial de sobrecargas",
+        powerFactor:"Factor Potencia", icp:"ICP", viewIcpLog:"Ver historial de sobrecargas",
         logFromLevel:"Registrar en log desde nivel:", logOrAmp:"o corriente:",
         countingSince:"Contando energía desde hace:", wipeMemory:"Borrar memoria", resetDeviceBtn:"Resetear dispositivo",
         saveChanges:"Guardar cambios", connected:"(CONECTADO)", disconnected:"(NO CONECTADO)",
         confirmWipe:"¿Seguro que quieres borrar por completo la EEPROM?\nEsto restaurará todos los valores de fábrica y perderás la configuración.",
         wipingEeprom:"Borrando EEPROM...", resettingDevice:"Reiniciando dispositivo...", checkNumbers:"Revisa los valores numéricos.",
-        tabConfig:"Configuración", tabRules:"&#9889; Reglas",
+        tabAlerts:"Alertas", tabConsumo:"Consumo", tabConfig:"Config", tabRules:"Reglas", saveAlerts:"Guardar alertas",
+        exportCfg:"Exportar configuración", importCfg:"Importar configuración", importConfirm:"Importar sobrescribirá la configuración actual con la del archivo. ¿Continuar?", importOk:"Configuración importada.", importErr:"No se pudo importar el archivo.",
         rulesTitle:"&#9889; Reglas / Disparadores",
         rulesIntro:"Dispara acciones cuando se cumplen una o varias condiciones sobre las medidas (con persistencia anti-rebote). Cada regla puede publicar en un topic MQTT o llamar a una URL (webhook).",
         ruleAdd:"&#43; Añadir regla", ruleSave:"&#128190; Guardar reglas", rulesSaved:"Reglas guardadas.", rulesSaveErr:"Error al guardar las reglas.",
@@ -403,13 +422,14 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         overvoltageAlert:"<b>Overvoltage</b> alert", undervoltageAlert:"<b>Undervoltage</b> alert",
         selectMetrics:"Select which metrics to show on the display:", voltage:"Voltage",
         frequency:"Frequency", current:"Current", power:"Power", energy:"Energy",
-        powerFactor:"Power Factor", icp:"ICP", viewHistory:"View Consumption History", viewIcpLog:"View overload history",
+        powerFactor:"Power Factor", icp:"ICP", viewIcpLog:"View overload history",
         logFromLevel:"Log episodes from level:", logOrAmp:"or current:",
         countingSince:"Counting energy since:", wipeMemory:"Wipe memory", resetDeviceBtn:"Reset device",
         saveChanges:"Save changes", connected:"(CONNECTED)", disconnected:"(NOT CONNECTED)",
         confirmWipe:"Are you sure you want to completely wipe the EEPROM?\nThis will restore all factory defaults and you will lose the configuration.",
         wipingEeprom:"Wiping EEPROM...", resettingDevice:"Restarting device...", checkNumbers:"Please check the numeric values.",
-        tabConfig:"Settings", tabRules:"&#9889; Rules",
+        tabAlerts:"Alerts", tabConsumo:"Usage", tabConfig:"Config", tabRules:"Rules", saveAlerts:"Save alerts",
+        exportCfg:"Export settings", importCfg:"Import settings", importConfirm:"Importing will overwrite the current settings with those in the file. Continue?", importOk:"Settings imported.", importErr:"Could not import the file.",
         rulesTitle:"&#9889; Rules / Triggers",
         rulesIntro:"Fire actions when one or more conditions on the measurements are met (with anti-bounce persistence). Each rule can publish to an MQTT topic or call a URL (webhook).",
         ruleAdd:"&#43; Add rule", ruleSave:"&#128190; Save rules", rulesSaved:"Rules saved.", rulesSaveErr:"Failed to save rules.",
@@ -434,6 +454,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         if (d[k] !== undefined) els[i].innerHTML = d[k];
       }
       var sc = document.getElementById('saveChangesBtn'); if(sc) sc.value = d.saveChanges;
+      var sa = document.getElementById('saveAlertsBtn'); if(sa) sa.value = d.saveAlerts;
       var lb = document.getElementById('langBtn'); if(lb) lb.textContent = (lang==='es'?'EN':'ES');
       CURRENT_LANG = lang;
       document.documentElement.lang = lang;
@@ -449,11 +470,38 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       applyLang(nl);                                  // translate the UI client-side (as before)
       try { fetch('/set_lang?lang='+nl); } catch(e){} // and persist it on the device (also drives the LCD)
     };
+    // Same-origin iframe (both served by the device), so its content height can be
+    // read directly to size the Consumo tab without an inner scrollbar.
+    window.sizeConsumoFrame = function(){
+      var f=document.getElementById('consumoFrame');
+      try{ if(f&&f.contentWindow&&f.contentWindow.document.body){ f.style.height=(f.contentWindow.document.body.scrollHeight+24)+'px'; } }catch(e){}
+    };
     window.showTab = function(name){
-      var panes = { config:'tab-config', rules:'tab-rules' };
-      for (var k in panes){ var el = document.getElementById(panes[k]); if (el) el.style.display = (k===name ? '' : 'none'); }
+      // 'alertas' and 'config' panes share one <form> and are tagged by class so
+      // every field always submits together; 'rules' and 'consumo' are their own blocks.
+      var setDisp = function(sel, show){ var els=document.querySelectorAll(sel); for(var j=0;j<els.length;j++) els[j].style.display=(show?'':'none'); };
+      setDisp('.pane-alertas', name==='alertas');
+      setDisp('.pane-config', name==='config');
+      var rules = document.getElementById('tab-rules'); if (rules) rules.style.display = (name==='rules' ? '' : 'none');
+      var cons = document.getElementById('tab-consumo'); if (cons) cons.style.display = (name==='consumo' ? '' : 'none');
+      if (name==='consumo'){ var fr=document.getElementById('consumoFrame'); if(fr && !fr.src){ fr.src=fr.getAttribute('data-src'); } setTimeout(sizeConsumoFrame,300); setTimeout(sizeConsumoFrame,1200); }
       var btns = document.querySelectorAll('.tab-btn');
       for (var i=0;i<btns.length;i++){ btns[i].classList.toggle('on', btns[i].getAttribute('data-tab')===name); }
+    };
+    window.doExportConfig = function(){ window.location = '/export'; };
+    window.doImportConfig = function(inp){
+      var f = inp.files && inp.files[0]; if(!f) return;
+      var d = I18N[CURRENT_LANG] || I18N.es;
+      if(!confirm(d.importConfirm)){ inp.value=''; return; }
+      var rd = new FileReader();
+      rd.onload = function(){
+        fetch('/import', {method:'POST', headers:{'Content-Type':'application/json'}, body:rd.result})
+          .then(function(r){ return r.json(); })
+          .then(function(j){ if(j&&j.ok){ alert(d.importOk); location.reload(); } else { alert(d.importErr); } })
+          .catch(function(){ alert(d.importErr); });
+        inp.value='';
+      };
+      rd.readAsText(f);
     };
     document.addEventListener('DOMContentLoaded', function() {
       // The device-saved language (rendered server-side) is the source of truth,
@@ -646,6 +694,11 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         return true;
       };
       function revealIfHidden(el) {
+        // If the field sits on a hidden tab, switch to it first so its error is visible.
+        if (el.closest) {
+          if (el.closest('.pane-config') && window.showTab) showTab('config');
+          else if (el.closest('.pane-alertas') && window.showTab) showTab('alertas');
+        }
         var box = document.getElementById('icp-curve-box');
         if (box && box.style.display === 'none' && box.contains(el)) box.style.display = 'block';
       }
@@ -660,6 +713,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
     var rulesEditorInit = function(){
     // ===== Rule engine editor =====
     var RULES = [];
+    var RULES_PAGE = 0;   // paginated editor: index of the single rule currently shown
     var RMAX = 16, RCONDS = 8;
     var RMETRICS = [
       {es:'Corriente', en:'Current', u:'A'},
@@ -757,20 +811,35 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
     function rulesRender(){
       var box=document.getElementById('rules-list');
       if(!box) return;
-      var cc=document.getElementById('rules-count');
-      if(cc){ cc.textContent=RULES.length; cc.className='rules-count'; }
-      if(!RULES.length){ box.innerHTML='<div class="rules-intro">'+rt('rulesEmpty')+'</div>'; return; }
-      var html='';
-      for(var i=0;i<RULES.length;i++) html+=rCardHTML(i,RULES[i]);
-      box.innerHTML=html;
+      var nav=document.getElementById('rules-nav');
+      if(!RULES.length){
+        box.innerHTML='<div class="rules-intro">'+rt('rulesEmpty')+'</div>';
+        if(nav) nav.style.display='none';
+        return;
+      }
+      if(RULES_PAGE<0) RULES_PAGE=0;
+      if(RULES_PAGE>=RULES.length) RULES_PAGE=RULES.length-1;
+      // Paginated: render only the current rule; Prev/Next move between them.
+      box.innerHTML=rCardHTML(RULES_PAGE,RULES[RULES_PAGE]);
+      if(nav){
+        nav.style.display=(RULES.length>1?'flex':'none');
+        var ind=document.getElementById('rules-page-ind');
+        if(ind) ind.textContent=(RULES_PAGE+1)+' / '+RULES.length;
+        var pv=document.getElementById('rules-prev'); if(pv) pv.disabled=(RULES_PAGE<=0);
+        var nx=document.getElementById('rules-next'); if(nx) nx.disabled=(RULES_PAGE>=RULES.length-1);
+      }
     }
 
     function rulesGather(){
+      // Only the current page's card is in the DOM, so merge each visible card
+      // back into RULES by its data-idx instead of rebuilding the whole array
+      // (rebuilding would drop every rule not currently shown).
       var cards=document.querySelectorAll('#rules-list .rule-card');
-      var out=[];
-      for(var i=0;i<cards.length;i++){
-        var card=cards[i];
-        var r=RULES[i]||rulesNew();
+      for(var c=0;c<cards.length;c++){
+        var card=cards[c];
+        var idx=parseInt(card.getAttribute('data-idx'),10);
+        if(isNaN(idx)||idx<0||idx>=RULES.length) continue;
+        var r=RULES[idx];
         var nEl=card.querySelector('.rname'); if(nEl) r.name=nEl.value.slice(0,15);
         var eEl=card.querySelector('.renabled'); if(eEl) r.enabled=eEl.checked;
         var cEl=card.querySelector('.combine'); if(cEl) r.combine=cEl.value;
@@ -798,9 +867,8 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         }
         if(acts.length) r.acts=acts;
         var sEl=card.querySelector('.samples'); if(sEl) r.samples=Math.max(1,Math.min(20,parseInt(sEl.value,10)||3));
-        out.push(r);
+        RULES[idx]=r;
       }
-      RULES=out;
     }
 
     window.rulesMetricChanged=function(sel){
@@ -808,8 +876,9 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       var u=row.querySelector('.unit'); if(u) u.innerHTML=resc(rMetricUnit(parseInt(sel.value,10)||0));
     };
     window.rulesToggle=function(i){ rulesGather(); rulesRender(); };
-    window.rulesAdd=function(){ rulesGather(); if(RULES.length>=RMAX){ rulesStatus(rt('ruleMaxReached'),'err'); return; } RULES.push(rulesNew()); rulesRender(); };
-    window.rulesDel=function(i){ rulesGather(); if(!confirm(rt('ruleDelC')+' #'+(i+1)+'?')) return; RULES.splice(i,1); rulesRender(); };
+    window.rulesPage=function(delta){ rulesGather(); RULES_PAGE=Math.max(0,Math.min(RULES.length-1,RULES_PAGE+delta)); rulesRender(); };
+    window.rulesAdd=function(){ rulesGather(); if(RULES.length>=RMAX){ rulesStatus(rt('ruleMaxReached'),'err'); return; } RULES.push(rulesNew()); RULES_PAGE=RULES.length-1; rulesRender(); };
+    window.rulesDel=function(i){ rulesGather(); if(!confirm(rt('ruleDelC')+' #'+(i+1)+'?')) return; RULES.splice(i,1); if(RULES_PAGE>i) RULES_PAGE--; rulesRender(); };
     window.rulesAddCond=function(i){ rulesGather(); if(RULES[i]&&RULES[i].conds.length<RCONDS){ RULES[i].conds.push({metric:0,op:1,value:0}); rulesRender(); } };
     window.rulesDelCond=function(i,k){ rulesGather(); if(RULES[i]){ RULES[i].conds.splice(k,1); if(!RULES[i].conds.length) RULES[i].conds.push({metric:0,op:1,value:0}); rulesRender(); } };
     window.rulesAddAction=function(i){ rulesGather(); if(RULES[i]){ if(RULES[i].acts.length<RACTS){ RULES[i].acts.push(newAction()); rulesRender(); } else { rulesStatus(rt('ruleActMaxReached'),'err'); } } };
@@ -1051,21 +1120,22 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
     .kpi .val small{font-size:.5em;color:#89a;font-weight:600;margin-left:3px;}
     .card{background:#fff;border:1px solid #bbf780;border-radius:13px;padding:14px 16px 10px;box-shadow:0 2px 12px #0001;margin-bottom:16px;}
     .card h2{font-size:1.03em;color:#2b7a2b;margin:0 0 14px 0;}
-    .chart{display:flex;align-items:flex-end;gap:5px;height:172px;overflow-x:auto;padding-top:20px;}
+    .chart{display:flex;align-items:flex-end;gap:5px;height:180px;overflow-x:auto;padding-top:28px;}
     .bar{position:relative;flex:1 0 auto;min-width:15px;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;cursor:default;}
     .bar .fill{position:relative;width:74%;max-width:34px;background:#3aa657;border-radius:4px 4px 0 0;min-height:2px;transition:height .3s,filter .1s;}
     .bar.cur .fill{background:#1e90ff;}
     .bar .lab{font-size:.71em;color:#789;margin-top:5px;white-space:nowrap;}
-    .bar .val{position:absolute;top:3px;left:50%;transform:translateX(-50%);font-size:.66em;color:#fff;font-weight:700;text-shadow:0 1px 2px rgba(0,0,0,.5);font-variant-numeric:tabular-nums;white-space:nowrap;opacity:0;transition:opacity .1s;pointer-events:none;}
+    .bar .val{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:3px;font-size:.66em;color:#223;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap;opacity:0;transition:opacity .1s;pointer-events:none;}
     .bar:hover .fill{filter:brightness(1.1);}
     .bar:hover .val{opacity:1;}
     .bar.showval .val{opacity:1;}
+    #chHour .bar{min-width:36px;}   /* wider hour bars so the value above fits without overlapping */
     .empty{color:#89a;text-align:center;padding:26px 10px;font-size:1.02em;}
     @media (prefers-color-scheme: dark){
       body{background:#1a1e17;color:#dde8d6;}
       .card,.kpi{background:#242a20;border-color:#3c4d2c;box-shadow:none;}
       h1{color:#9cf;} .kpi .val{color:#84ce84;} .card h2{color:#84ce84;} .kpi .lbl{color:#9ab08e;}
-      .bar .lab{color:#9ab08e;} .bar .fill{background:#43b061;}
+      .bar .lab{color:#9ab08e;} .bar .fill{background:#43b061;} .bar .val{color:#e6efdf;}
     }
   </style>
 </head>
@@ -1073,7 +1143,10 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
   <div class="wrap">
     <div class="top">
       <a class="back" id="back" href="/">&larr; Volver</a>
-      <button class="refresh" id="refresh" onclick="load()">Actualizar</button>
+      <div style="display:flex;gap:8px;">
+        <button class="refresh" id="dl" onclick="location.href='/export_hist'">Descargar</button>
+        <button class="refresh" id="refresh" onclick="load()">Actualizar</button>
+      </div>
     </div>
     <h1 id="title" style="margin:12px 0 2px 0">Consumo eléctrico</h1>
     <div class="kpis" id="kpis"></div>
@@ -1093,7 +1166,7 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
     var LANG='%LANG%';
     var DAYS_SHOWN=31;
     var T={
-      es:{title:'Consumo eléctrico',back:'← Volver',refresh:'Actualizar',
+      es:{title:'Consumo eléctrico',back:'← Volver',refresh:'Actualizar',dl:'Descargar',
           month:'Consumo mensual',day:'Consumo diario (últimos {n} días)',
           hour:'Consumo por hora',hourPick:'Ver un día:',hourGo:'Ver',
           hourHint:'Elige un día arriba, o pulsa una barra del gráfico diario.',
@@ -1101,7 +1174,7 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
           kToday:'Hoy',kMonth:'Este mes',kAvg:'Media diaria',
           empty:'Sin datos todavía',err:'Error al cargar los consumos.',
           months:['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic']},
-      en:{title:'Electricity usage',back:'← Back',refresh:'Refresh',
+      en:{title:'Electricity usage',back:'← Back',refresh:'Refresh',dl:'Download',
           month:'Monthly usage',day:'Daily usage (last {n} days)',
           hour:'Hourly usage',hourPick:'View a day:',hourGo:'View',
           hourHint:'Pick a day above, or tap a bar in the daily chart.',
@@ -1117,6 +1190,9 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
       document.getElementById('title').textContent=L.title;
       document.getElementById('back').textContent=L.back;
       document.getElementById('refresh').textContent=L.refresh;
+      var dlb=document.getElementById('dl'); if(dlb) dlb.textContent=L.dl;
+      // Embedded as the Consumo tab (inside an iframe): no Back button there.
+      if(window.self!==window.top){ var bk=document.getElementById('back'); if(bk) bk.style.display='none'; }
       document.getElementById('hMonth').textContent=L.month;
       document.getElementById('hDay').textContent=L.day.replace('{n}',DAYS_SHOWN);
       document.getElementById('hHour').textContent=L.hour;
@@ -1132,7 +1208,7 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
       items.forEach(function(it){
         var px=Math.max(2,Math.round(it.v/max*140));
         var clk=it.click?' onclick="'+it.click+'" style="cursor:pointer"':'';
-        h+='<div class="bar'+(it.cur?' cur':'')+(showVals?' showval':'')+'"'+clk+' title="'+it.lab+': '+fmt(it.v)+' kWh">'
+        h+='<div class="bar'+(it.cur?' cur':'')+((showVals&&it.v>0)?' showval':'')+'"'+clk+' title="'+it.lab+': '+fmt(it.v)+' kWh">'
           +'<div class="fill" style="height:'+px+'px"><span class="val">'+fmt(it.v)+'</span></div>'
           +'<div class="lab">'+it.lab+'</div></div>';
       });
@@ -1146,7 +1222,7 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
       var curMonthV=0;
       if(j.mes_actual){curMonthV=num(j.mes_actual.consumo);
         months.push({v:curMonthV,lab:L.months[(+j.mes_actual.mes-1)%12]+" '"+String(j.mes_actual['año']).slice(2),cur:true});}
-      drawChart(document.getElementById('chMonth'),months,months.length<=14);
+      var elM=document.getElementById('chMonth'); drawChart(elM,months,months.length<=14); elM.scrollLeft=elM.scrollWidth; // start scrolled to the current month
       // Daily: recent DAYS_SHOWN completed days + today. Each bar drills into its hours.
       var dias=(j.diario||[]).map(function(d){return {v:num(d.kwh),lab:String(d.dia),cur:false,
         click:'drillDay('+(+d['año'])+','+(+d.mes)+','+(+d.dia)+')'};});
@@ -1156,11 +1232,16 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
         dias.push({v:today,lab:String(j.dia_actual.dia),cur:true,click:'drillDay('+ty+','+tm+','+(+j.dia_actual.dia)+')'});
       }
       dias=dias.slice(-DAYS_SHOWN);
-      drawChart(document.getElementById('chDay'),dias,dias.length<=16);
+      var elD=document.getElementById('chDay'); drawChart(elD,dias,dias.length<=16); elD.scrollLeft=elD.scrollWidth; // start scrolled to today
       // KPIs
       var avg=0,cnt=0;(j.diario||[]).forEach(function(d){avg+=num(d.kwh);cnt++;}); avg=cnt?avg/cnt:0;
       document.getElementById('kpis').innerHTML=
         kpi(L.kToday,fmt(today))+kpi(L.kMonth,fmt(curMonthV))+kpi(L.kAvg,fmt(avg));
+      // Open today's hours by default (still overridable via the picker or a daily bar).
+      if(j.dia_actual){
+        var ty2=(j.mes_actual?+j.mes_actual['año']:0), tm2=(j.mes_actual?+j.mes_actual.mes:0);
+        drillDay(ty2,tm2,+j.dia_actual.dia);
+      }
     }
     function showErr(){document.getElementById('kpis').innerHTML='';document.getElementById('chMonth').innerHTML='<div class="empty">'+L.err+'</div>';document.getElementById('chDay').innerHTML='';}
     function pad2(n){return ('0'+n).slice(-2);}
@@ -1174,7 +1255,7 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
         if(!horas.length){ el.innerHTML='<div class="empty">'+L.hourNone+'</div>'; return; }
         var byH={}; horas.forEach(function(x){byH[+x.hora]=num(x.kwh);});
         var items=[]; for(var k=0;k<24;k++){ items.push({v:(byH[k]!==undefined?byH[k]:0),lab:k+'h'}); }
-        drawChart(el,items,false);
+        drawChart(el,items,true);
       }).catch(function(){ el.innerHTML='<div class="empty">'+L.err+'</div>'; });
     };
     window.pickDay=function(){
@@ -4421,6 +4502,55 @@ void handleExport() {
   server.sendContent("");
 }
 
+// --- /export_hist --- downloadable dump of the consumption history (monthly +
+// daily + hourly) as one JSON. Download-only: histories are device telemetry, not
+// restorable config, so there is no matching import. Streamed by hand like /export.
+void handleExportHist() {
+  static char buf[224];
+  server.sendHeader("Cache-Control", "no-store");
+  server.sendHeader("Content-Disposition", "attachment; filename=multimetreitor-historicos.json");
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "application/json; charset=utf-8", "");
+
+  server.sendContent("{\"schema\":1,\"device\":\"multimetreitor\",\"monthly\":[");
+  {
+    File mf = LittleFS.open(ENERGY_MONTHLY_FILE, "r");
+    bool first = true; uint8_t mb[7];
+    while (mf && mf.read(mb, 7) == 7) {
+      uint16_t my; uint8_t mm; float mk;
+      memcpy(&my, mb, 2); mm = mb[2]; memcpy(&mk, mb + 3, 4);
+      if (mm == 0) continue;
+      snprintf(buf, sizeof(buf), "%s{\"y\":%u,\"m\":%u,\"kwh\":%.3f}", first ? "" : ",", my, mm, (double)mk);
+      server.sendContent(buf); first = false;
+    }
+    if (mf) mf.close();
+  }
+  server.sendContent("],\"daily\":[");
+  {
+    File df = LittleFS.open(ENERGY_DAILY_FILE, "r");
+    bool first = true; uint8_t db[8];
+    while (df && df.read(db, 8) == 8) {
+      uint16_t dy; float dk; memcpy(&dy, db, 2); memcpy(&dk, db + 4, 4);
+      snprintf(buf, sizeof(buf), "%s{\"y\":%u,\"m\":%u,\"d\":%u,\"kwh\":%.3f}", first ? "" : ",", dy, db[2], db[3], (double)dk);
+      server.sendContent(buf); first = false;
+    }
+    if (df) df.close();
+  }
+  server.sendContent("],\"hourly\":[");
+  {
+    File hf = LittleFS.open(ENERGY_HOURLY_FILE, "r");
+    bool first = true; uint8_t hb[9];
+    while (hf && hf.read(hb, 9) == 9) {
+      uint16_t hy; float hk; memcpy(&hy, hb, 2); memcpy(&hk, hb + 5, 4);
+      snprintf(buf, sizeof(buf), "%s{\"y\":%u,\"m\":%u,\"d\":%u,\"h\":%u,\"kwh\":%.3f}", first ? "" : ",", hy, hb[2], hb[3], hb[4], (double)hk);
+      server.sendContent(buf); first = false;
+    }
+    if (hf) hf.close();
+  }
+  server.sendContent("]}");
+  server.sendContent("");
+}
+
 // --- /import (POST) --- restores a /export backup (schema 1). Every field is
 // CLAMPED to its valid range rather than rejected, so a hand-edited backup can
 // never leave an out-of-range value that loadConfig() would later wipe the whole
@@ -4577,7 +4707,8 @@ void setupWeb() {
   server.on("/consumos", handleConsumoPage);   // pretty energy-usage page
   server.on("/save_icp_log_cfg", HTTP_POST, handleSaveIcpLogCfg);   // edit log thresholds from /icp_log
   server.on("/fsinfo", handleFsInfo);   // flash/FS diagnostic
-  server.on("/export", handleExport);   // whole-device backup (JSON)
+  server.on("/export", handleExport);   // config backup (JSON)
+  server.on("/export_hist", handleExportHist);   // download-only consumption history dump
   server.on("/import", HTTP_POST, handleImport);  // restore a backup
   server.on("/json_rules", handleJsonRules);
   server.on("/save_rules", HTTP_POST, handleSaveRules);
