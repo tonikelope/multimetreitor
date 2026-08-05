@@ -1147,7 +1147,7 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
     .bar:hover .fill{filter:brightness(1.1);}
     .bar:hover .val{opacity:1;}
     .bar.showval .val{opacity:1;}
-    #chHour .bar{min-width:36px;}   /* wider hour bars so the value above fits without overlapping */
+    #chSearch .bar{min-width:36px;}   /* wider hour bars so the value above fits without overlapping */
     .empty{color:#89a;text-align:center;padding:26px 10px;font-size:1.02em;}
     @media (prefers-color-scheme: dark){
       body{background:#1a1e17;color:#dde8d6;}
@@ -1171,34 +1171,42 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
     <div class="card"><h2 id="hMonth">Consumo mensual</h2><div class="chart" id="chMonth"><div class="empty">&hellip;</div></div></div>
     <div class="card"><h2 id="hDay">Consumo diario</h2><div class="chart" id="chDay"><div class="empty">&hellip;</div></div></div>
     <div class="card">
-      <h2 id="hHour">Consumo por hora</h2>
-      <div style="margin:0 0 12px 0;font-size:0.92em;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <span id="hourPickLbl">Ver un día:</span>
+      <h2 id="hSearch">Buscar un día</h2>
+      <div style="margin:0 0 10px 0;font-size:0.92em;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span id="searchLbl">Ver un día:</span>
         <input type="date" id="dpick" onchange="pickDay()" style="padding:3px 6px;border:1px solid #bbf780;border-radius:6px;font-size:0.95em">
       </div>
-      <div class="chart" id="chHour"><div class="empty" id="hourHint">&hellip;</div></div>
+      <div id="searchSums" style="display:flex;gap:8px 20px;flex-wrap:wrap;margin:0 0 12px 0;font-size:0.95em">
+        <span id="sMonth"></span>
+        <span id="sDay" style="font-weight:700"></span>
+      </div>
+      <div class="chart" id="chSearch"><div class="empty" id="searchHint">&hellip;</div></div>
     </div>
   </div>
   <script>
     var LANG='%LANG%';
-    var DAYS_SHOWN=31;
+    var DATA=null;
     var T={
       es:{title:'Consumo eléctrico',back:'← Volver',refresh:'Actualizar',dl:'Descargar',
-          month:'Consumo mensual',day:'Consumo diario (últimos {n} días)',
-          hour:'Consumo por hora',hourPick:'Ver un día:',
-          hourHint:'Elige un día arriba, o pulsa una barra del gráfico diario.',
-          hourOf:'Horas del {d}/{m}/{y}',hourNone:'Sin datos horarios para ese día.',
+          month:'Consumo mensual',day:'Consumo diario',
+          search:'Buscar un día',searchPick:'Ver un día:',
+          searchHint:'Elige un día para ver su consumo.',
+          sumMonth:'Consumo total del mes: {v} kWh',sumDay:'Consumo de ese día: {v} kWh',
+          hourNone:'Sin datos horarios para ese día.',
           kToday:'Hoy',kMonth:'Este mes',kAvg:'Media diaria',
           empty:'Sin datos todavía',err:'Error al cargar los consumos.',
-          months:['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic']},
+          months:['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'],
+          monthsL:['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre']},
       en:{title:'Electricity usage',back:'← Back',refresh:'Refresh',dl:'Download',
-          month:'Monthly usage',day:'Daily usage (last {n} days)',
-          hour:'Hourly usage',hourPick:'View a day:',
-          hourHint:'Pick a day above, or tap a bar in the daily chart.',
-          hourOf:'Hours of {d}/{m}/{y}',hourNone:'No hourly data for that day.',
+          month:'Monthly usage',day:'Daily usage',
+          search:'Search a day',searchPick:'View a day:',
+          searchHint:'Pick a day to see its usage.',
+          sumMonth:'Month total: {v} kWh',sumDay:'That day: {v} kWh',
+          hourNone:'No hourly data for that day.',
           kToday:'Today',kMonth:'This month',kAvg:'Daily avg',
           empty:'No data yet',err:'Failed to load usage data.',
-          months:['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']}
+          months:['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'],
+          monthsL:['January','February','March','April','May','June','July','August','September','October','November','December']}
     };
     var L=T[LANG]||T.es;
     function num(x){var v=parseFloat(x);return isFinite(v)?v:0;}
@@ -1211,10 +1219,10 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
       // Embedded as the Consumo tab (inside an iframe): no Back button there.
       if(window.self!==window.top){ var bk=document.getElementById('back'); if(bk) bk.style.display='none'; }
       document.getElementById('hMonth').textContent=L.month;
-      document.getElementById('hDay').textContent=L.day.replace('{n}',DAYS_SHOWN);
-      document.getElementById('hHour').textContent=L.hour;
-      document.getElementById('hourPickLbl').textContent=L.hourPick;
-      document.getElementById('hourHint').textContent=L.hourHint;
+      document.getElementById('hDay').textContent=L.day;
+      document.getElementById('hSearch').textContent=L.search;
+      document.getElementById('searchLbl').textContent=L.searchPick;
+      document.getElementById('searchHint').textContent=L.searchHint;
     }
     function kpi(lbl,val){return '<div class="kpi"><div class="lbl">'+lbl+'</div><div class="val">'+val+' <small>kWh</small></div></div>';}
     function drawChart(el,items,showVals){
@@ -1231,6 +1239,8 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
       el.innerHTML=h;
     }
     function render(j){
+      DATA=j;
+      var cy=(j.mes_actual?+j.mes_actual.año:0), cm=(j.mes_actual?+j.mes_actual.mes:0);
       // Monthly: completed months (sorted by year, month) + the current month.
       var hist=(j.historial||[]).map(function(m){return {y:+m['año'],mo:+m.mes,v:num(m.consumo),cur:false};});
       hist.sort(function(a,b){return a.y-b.y||a.mo-b.mo;});
@@ -1240,38 +1250,43 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
         months.push({v:curMonthV,lab:L.months[(+j.mes_actual.mes-1)%12]+" '"+String(j.mes_actual['año']).slice(2),cur:true});}
       var elM=document.getElementById('chMonth'); drawChart(elM,months,months.length<=14); elM.scrollLeft=elM.scrollWidth; // start scrolled to the current month
       // Daily: recent DAYS_SHOWN completed days + today. Each bar drills into its hours.
-      var dias=(j.diario||[]).map(function(d){return {v:num(d.kwh),lab:String(d.dia),cur:false,
+      var dias=(j.diario||[]).filter(function(d){return !cm||(+d['año']===cy&&+d.mes===cm);}).map(function(d){return {v:num(d.kwh),lab:String(d.dia),cur:false,
         click:'drillDay('+(+d['año'])+','+(+d.mes)+','+(+d.dia)+')'};});
       var today=j.dia_actual?num(j.dia_actual.kwh):0;
       if(j.dia_actual){
         var ty=(j.mes_actual?+j.mes_actual['año']:0), tm=(j.mes_actual?+j.mes_actual.mes:0);
         dias.push({v:today,lab:String(j.dia_actual.dia),cur:true,click:'drillDay('+ty+','+tm+','+(+j.dia_actual.dia)+')'});
       }
-      dias=dias.slice(-DAYS_SHOWN);
       var elD=document.getElementById('chDay'); drawChart(elD,dias,dias.length<=16); elD.scrollLeft=elD.scrollWidth; // start scrolled to today
+      if(cm){ document.getElementById('hDay').textContent=L.day+' - '+L.monthsL[cm-1]+' '+cy; }
       // KPIs
       var avg=0,cnt=0;(j.diario||[]).forEach(function(d){avg+=num(d.kwh);cnt++;}); avg=cnt?avg/cnt:0;
       document.getElementById('kpis').innerHTML=
         kpi(L.kToday,fmt(today))+kpi(L.kMonth,fmt(curMonthV))+kpi(L.kAvg,fmt(avg));
-      // Open today's hours by default (still overridable via the picker or a daily bar).
-      if(j.dia_actual){
-        var ty2=(j.mes_actual?+j.mes_actual['año']:0), tm2=(j.mes_actual?+j.mes_actual.mes:0);
-        drillDay(ty2,tm2,+j.dia_actual.dia);
-      }
+      // Search box: cap the picker at today and load today by default.
+      var dp=document.getElementById('dpick'); if(dp&&j.dia_actual){ dp.max=cy+'-'+pad2(cm)+'-'+pad2(+j.dia_actual.dia); }
+      if(j.dia_actual){ drillDay(cy,cm,+j.dia_actual.dia); }
     }
     function showErr(){document.getElementById('kpis').innerHTML='';document.getElementById('chMonth').innerHTML='<div class="empty">'+L.err+'</div>';document.getElementById('chDay').innerHTML='';}
     function pad2(n){return ('0'+n).slice(-2);}
+    function monthTotal(y,m){
+      if(DATA&&DATA.mes_actual&&+DATA.mes_actual.año===y&&+DATA.mes_actual.mes===m) return num(DATA.mes_actual.consumo);
+      var h=(DATA&&DATA.historial)||[]; for(var i=0;i<h.length;i++){ if(+h[i].año===y&&+h[i].mes===m) return num(h[i].consumo); }
+      return null;
+    }
     window.drillDay=function(y,m,d){
-      var el=document.getElementById('chHour');
+      var el=document.getElementById('chSearch');
       el.innerHTML='<div class="empty">&hellip;</div>';
       var dp=document.getElementById('dpick'); if(dp) dp.value=y+'-'+pad2(m)+'-'+pad2(d);
-      var hh2=document.getElementById('hHour'); if(hh2) hh2.textContent=L.hour+' — '+L.hourOf.replace('{d}',d).replace('{m}',m).replace('{y}',y);
+      var mv=monthTotal(y,m); document.getElementById('sMonth').textContent=L.sumMonth.replace('{v}',mv==null?'-':fmt(mv));
+      var sd=document.getElementById('sDay');
       fetch('/json_hours?y='+y+'&m='+m+'&d='+d,{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){
         var horas=(j.horas||[]);
-        if(!horas.length){ el.innerHTML='<div class="empty">'+L.hourNone+'</div>'; return; }
-        var byH={}; horas.forEach(function(x){byH[+x.hora]=num(x.kwh);});
+        if(!horas.length){ el.innerHTML='<div class="empty">'+L.hourNone+'</div>'; sd.textContent=L.sumDay.replace('{v}','0'); return; }
+        var byH={},tot=0; horas.forEach(function(x){var v=num(x.kwh);byH[+x.hora]=v;tot+=v;});
         var items=[]; for(var k=0;k<24;k++){ items.push({v:(byH[k]!==undefined?byH[k]:0),lab:k+'h'}); }
         drawChart(el,items,true);
+        sd.textContent=L.sumDay.replace('{v}',fmt(tot));
       }).catch(function(){ el.innerHTML='<div class="empty">'+L.err+'</div>'; });
     };
     window.pickDay=function(){
@@ -1281,6 +1296,12 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
     function load(){
       fetch('/consumo',{cache:'no-store'}).then(function(r){return r.json();}).then(render).catch(showErr);
     }
+    // Keep the embedding Consumo tab (parent iframe) sized to our content as it grows.
+    try{
+      if(window.self!==window.top && window.ResizeObserver){
+        new ResizeObserver(function(){ if(window.parent&&window.parent.sizeConsumoFrame) window.parent.sizeConsumoFrame(); }).observe(document.body);
+      }
+    }catch(e){}
     applyStatic();load();
   </script>
 </body>
