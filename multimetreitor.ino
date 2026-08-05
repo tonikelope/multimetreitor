@@ -1138,7 +1138,7 @@ const char CONSUMO_html[] PROGMEM = R"rawliteral(
     .kpi .val small{font-size:.5em;color:#89a;font-weight:600;margin-left:3px;}
     .card{background:#fff;border:1px solid #bbf780;border-radius:13px;padding:14px 16px 10px;box-shadow:0 2px 12px #0001;margin-bottom:16px;}
     .card h2{font-size:1.03em;color:#2b7a2b;margin:0 0 14px 0;}
-    .chart{display:flex;align-items:flex-end;gap:5px;height:180px;overflow-x:auto;padding-top:28px;}
+    .chart{display:flex;align-items:flex-end;gap:5px;height:196px;overflow-x:auto;padding-top:28px;padding-bottom:16px;}   /* padding-bottom leaves room for the overlay h-scrollbar so it doesn't cover the x-axis labels */
     .bar{position:relative;flex:1 0 auto;min-width:15px;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;cursor:default;}
     .bar .fill{position:relative;width:74%;max-width:34px;background:#3aa657;border-radius:4px 4px 0 0;min-height:2px;transition:height .3s,filter .1s;}
     .bar.cur .fill{background:#1e90ff;}
