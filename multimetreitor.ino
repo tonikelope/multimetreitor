@@ -179,6 +179,8 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
     .rule-del:hover { background:#fde7e7; }
     .rule-block { background:#fff; border:1px solid #e7ebf5; border-radius:8px; padding:9px 10px; margin-bottom:9px; }
     .rule-block > .lbl { font-size:0.82em; text-transform:uppercase; letter-spacing:0.5px; color:#8894ad; font-weight:bold; margin-bottom:6px; }
+    .rule-count { font-weight:normal; letter-spacing:0; color:#aab4c8; }
+    .rule-count.full { color:#c88a56; }
     .cond-row { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:6px; }
     .cond-row select, .cond-row input[type=number] { margin-left:0; }
     .cond-row .metric { min-width:120px; }
@@ -814,10 +816,10 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         +   '<label class="sw"><input type="checkbox" class="renabled"'+(r.enabled?' checked':'')+' onchange="rulesToggle('+i+')"> '+rt('ruleEnabled')+'</label>'
         +   '<button type="button" class="rule-del" onclick="rulesDel('+i+')" title="x">&#10005;</button>'
         + '</div>'
-        + '<div class="rule-block"><div class="lbl">'+rt('ruleWhen')+'</div>'+conds
+        + '<div class="rule-block"><div class="lbl">'+rt('ruleWhen')+' <span class="rule-count'+(r.conds.length>=RCONDS?' full':'')+'">'+r.conds.length+'/'+RCONDS+'</span></div>'+conds
         +   '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:4px;">'+addCond+combine+'</div>'
         + '</div>'
-        + '<div class="rule-block"><div class="lbl">'+rt('ruleThen')+'</div>'+acts+addAct
+        + '<div class="rule-block"><div class="lbl">'+rt('ruleThen')+' <span class="rule-count'+(r.acts.length>=RACTS?' full':'')+'">'+r.acts.length+'/'+RACTS+'</span></div>'+acts+addAct
         +   '<div class="rule-foot">'
         +     '<label>'+rt('ruleSamples')+' <input type="number" class="samples" min="1" max="20" value="'+(r.samples||3)+'"></label>'
         +     '<button type="button" class="rule-test-btn" onclick="rulesTest('+i+')">'+rt('ruleTest')+'</button>'
