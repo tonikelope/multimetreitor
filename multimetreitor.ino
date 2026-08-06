@@ -2986,6 +2986,52 @@ static void lcdPad16(const char* src, char out[17]) {
   out[16] = '\0';
 }
 
+// Centers a string within the 16-char field: the leftover space is split so
+// the content sits in the middle, with the rest space-padded so the line still
+// fully overwrites the previous frame. Content longer than 16 is clamped (no
+// leading pad). Both the physical LCD (renderLCD) and the web mirror (/json_lcd)
+// read the same buffer, so centering here centers both from a single place.
+static void lcdCenter16(const char* src, char out[17]) {
+  uint8_t len = 0;
+  while (len < 16 && src[len]) ++len;   // measured length, clamped to 16
+  uint8_t pad = (16 - len) / 2;         // odd leftover leans one space left
+  uint8_t i = 0;
+  for (; i < pad; ++i) out[i] = ' ';
+  for (uint8_t j = 0; j < len; ++j) out[i++] = src[j];
+  for (; i < 16; ++i) out[i] = ' ';
+  out[16] = '\0';
+}
+
+// Like lcdCenter16 but pins the first `fixed` chars of src at the left and
+// centers only the remainder in the leftover field. Used for LCD line 1 in
+// normal mode, whose leading WiFi/MQTT status flags (@ # / !@ !#) must stay
+// anchored at column 0 while the metrics after them are centered. The single
+// space composeLCDLines puts between the flags and the first metric is absorbed
+// by the centering. If `fixed` covers the whole string, this pads the rest.
+static void lcdCenter16Prefixed(const char* src, char out[17], uint8_t fixed) {
+  uint8_t srclen = 0;
+  while (src[srclen]) ++srclen;
+  if (fixed > srclen) fixed = srclen;
+  if (fixed > 16) fixed = 16;
+
+  uint8_t i = 0;
+  for (; i < fixed; ++i) out[i] = src[i];   // pinned prefix at [0, fixed)
+
+  const char* rest = src + fixed;
+  while (*rest == ' ') ++rest;               // drop the separator space(s)
+  uint8_t restlen = 0;
+  while (rest[restlen]) ++restlen;
+
+  uint8_t field = 16 - fixed;                // columns available to the right
+  if (restlen > field) restlen = field;      // clamp overflow
+  uint8_t pad = (field - restlen) / 2;
+
+  for (uint8_t k = 0; k < pad; ++k) out[i++] = ' ';
+  for (uint8_t j = 0; j < restlen; ++j) out[i++] = rest[j];
+  for (; i < 16; ++i) out[i] = ' ';
+  out[16] = '\0';
+}
+
 // Redraws only the characters that changed since the last render. Avoids
 // lcd.clear() (2ms busy-wait + flicker) and cuts the per-cycle LCD cost from
 // ~54-60ms (full redraw: 6 I2C transactions per char at ~1.8ms) to a few ms,
@@ -3017,9 +3063,8 @@ void renderLCD() {
 }
 
 void showLCDSplash() {
-  strncpy(lcdLine1, "MULTIMETREITOR", 16);
-  lcdLine1[16] = '\0';
-  lcdPad16(LCD_MSG_STARTING[config.lcdLang], lcdLine2);  // pad to 16 so line fully overwrites
+  lcdCenter16("MULTIMETREITOR", lcdLine1);
+  lcdCenter16(LCD_MSG_STARTING[config.lcdLang], lcdLine2);  // centered + padded to 16
 
   lcd.init();
   lcd.backlight();
@@ -3588,18 +3633,18 @@ void readSensorsAndTriggerAlerts() {
   // 4) Buzzer
   driveBuzzer(alert.any);
 
-  // 5) LCD Update
+  // 5) LCD Update (both lines centered in the 16-char field; see lcdCenter16)
   if (alert.any) {
-    strncpy(lcdLine1, alert.msg, 16);
-    strncpy(lcdLine2, alert.value, 16);
-    lcdLine1[16] = '\0';
-    lcdLine2[16] = '\0';
+    lcdCenter16(alert.msg, lcdLine1);
+    lcdCenter16(alert.value, lcdLine2);
   } else {
     LCDLines lines = composeLCDLines();
-    strncpy(lcdLine1, lines.l1, 16);
-    strncpy(lcdLine2, lines.l2, 16);
-    lcdLine1[16] = '\0';
-    lcdLine2[16] = '\0';
+    // Line 1 leads with the WiFi/MQTT status flags: keep them pinned left and
+    // center only the metrics after them. The flags are the leading run of
+    // non-space chars, so the first space marks where the metrics begin.
+    uint8_t statusLen = strcspn(lines.l1, " ");
+    lcdCenter16Prefixed(lines.l1, lcdLine1, statusLen);
+    lcdCenter16(lines.l2, lcdLine2);
   }
 
   renderLCD();
