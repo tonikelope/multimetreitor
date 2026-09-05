@@ -318,7 +318,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
           <span class="consumo-unidad">
             <input type='radio' name='consumoTipo' value='amperios' %CONSUMO_A%>A
             <input type='radio' name='consumoTipo' value='watios' %CONSUMO_W%>W
-            <input type='number' step='0.01' min='0' max='10000' name='consumoValor' value='%CONSUMO_VALOR%' required>
+            <input type='number' id='consumoValor' step='0.1' min='0' max='10000' name='consumoValor' value='%CONSUMO_VALOR%' required>
           </span>
         </div>
         <div class='alert-row'>
@@ -523,6 +523,24 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       rd.readAsText(f);
     };
     document.addEventListener('DOMContentLoaded', function() {
+      // Match the alert spinner to useful configuration precision. The PZEM may
+      // report hundredths of an amp, but threshold arrows in hundredths are too
+      // slow; power thresholds are more naturally adjusted in whole watts.
+      var consumoInp = document.getElementById('consumoValor');
+      var consumoTipos = document.querySelectorAll('input[name="consumoTipo"]');
+      var syncConsumoStep = function(roundValue) {
+        if (!consumoInp) return;
+        var amperios = document.querySelector('input[name="consumoTipo"][value="amperios"]:checked');
+        var step = amperios ? 0.1 : 1;
+        consumoInp.step = String(step);
+        if (roundValue && consumoInp.value !== '' && !isNaN(consumoInp.value)) {
+          var n = Math.round(Number(consumoInp.value) / step) * step;
+          consumoInp.value = amperios ? n.toFixed(1) : n.toFixed(0);
+        }
+      };
+      syncConsumoStep(false);
+      for (var ct=0;ct<consumoTipos.length;ct++) consumoTipos[ct].addEventListener('change', function(){ syncConsumoStep(true); });
+
       // The device-saved language (rendered server-side) is the source of truth,
       // so a fresh browser loads the language stored on the device.
       applyLang('%LANG%'==='en'?'en':'es');
@@ -699,7 +717,10 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
         });
     };
       window.validateForm = function() {
-        let nums = document.querySelectorAll('input[type=number]');
+        // Rule values are persisted by their own Save button, not by this form.
+        // Excluding them also prevents a legacy, more precise rule value from
+        // blocking an unrelated alert/config save after spinner steps change.
+        let nums = document.querySelectorAll('input[type=number]:not(.cval)');
         for (let i = 0; i < nums.length; ++i) {
           let n = nums[i].value;
           if(n === "" || isNaN(n) || Number(n)<0) {
@@ -736,19 +757,20 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
     var RULES_PAGE = 0;   // paginated editor: index of the single rule currently shown
     var RMAX = 16, RCONDS = 8;
     var RMETRICS = [
-      {es:'Corriente', en:'Current', u:'A'},
-      {es:'Tensión', en:'Voltage', u:'V'},
-      {es:'Potencia', en:'Power', u:'W'},
-      {es:'Factor de potencia', en:'Power factor', u:''},
-      {es:'Frecuencia', en:'Frequency', u:'Hz'},
-      {es:'Carga ICP', en:'ICP load', u:'%'},
-      {es:'Energía', en:'Energy', u:'kWh'}
+      {es:'Corriente', en:'Current', u:'A', step:0.1},
+      {es:'Tensión', en:'Voltage', u:'V', step:0.1},
+      {es:'Potencia', en:'Power', u:'W', step:1},
+      {es:'Factor de potencia', en:'Power factor', u:'', step:0.01},
+      {es:'Frecuencia', en:'Frequency', u:'Hz', step:0.1},
+      {es:'Carga ICP', en:'ICP load', u:'%', step:1},
+      {es:'Energía', en:'Energy', u:'kWh', step:0.01}
     ];
     var ROPS = ['&gt;','&ge;','&lt;','&le;','='];
     function rt(k){ var d=I18N[CURRENT_LANG]||I18N.es; return d[k]!==undefined?d[k]:(I18N.es[k]||k); }
     function resc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
     function rMetricLabel(v){ var m=RMETRICS[v]||RMETRICS[0]; return CURRENT_LANG==='en'?m.en:m.es; }
     function rMetricUnit(v){ return (RMETRICS[v]||RMETRICS[0]).u; }
+    function rMetricStep(v){ return (RMETRICS[v]||RMETRICS[0]).step; }
     var RACTS=4;
     function newAction(){ return {type:'mqtt',target:'',fire:'',clear:'',retain:true,post:false}; }
     function rulesNew(){ return {enabled:true,name:'',combine:'and',samples:3,conds:[{metric:0,op:1,value:0}],acts:[newAction()]}; }
@@ -762,7 +784,7 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
       return '<div class="cond-row">'
         + '<select class="metric" onchange="rulesMetricChanged(this)">'+mopts+'</select>'
         + '<select class="op">'+oopts+'</select>'
-        + '<input type="number" step="0.01" class="cval" value="'+resc(c.value)+'">'
+        + '<input type="number" step="'+rMetricStep(c.metric)+'" class="cval" value="'+resc(c.value)+'">'
         + '<span class="unit">'+resc(rMetricUnit(c.metric))+'</span>'
         + del + '</div>';
     }
@@ -893,7 +915,9 @@ const char MAIN_html[] PROGMEM = R"rawliteral(
 
     window.rulesMetricChanged=function(sel){
       var row=sel.closest('.cond-row'); if(!row) return;
-      var u=row.querySelector('.unit'); if(u) u.innerHTML=resc(rMetricUnit(parseInt(sel.value,10)||0));
+      var metric=parseInt(sel.value,10)||0;
+      var u=row.querySelector('.unit'); if(u) u.innerHTML=resc(rMetricUnit(metric));
+      var v=row.querySelector('.cval'); if(v) v.step=String(rMetricStep(metric));
     };
     window.rulesToggle=function(i){ rulesGather(); rulesRender(); };
     window.rulesPage=function(delta){ rulesGather(); RULES_PAGE=Math.max(0,Math.min(RULES.length-1,RULES_PAGE+delta)); rulesRender(); };
@@ -3855,7 +3879,13 @@ static bool configTokenValue(const char* tok, char* out, size_t n) {
   else if (!strcmp_P(tok, PSTR("CONSUMO_ENABLED")))  { strncpy_P(out, config.consumoEnabled ? PSTR("checked") : PSTR(""), n); out[n-1] = '\0'; }
   else if (!strcmp_P(tok, PSTR("CONSUMO_A")))        { strncpy_P(out, config.consumoEnAmperios ? PSTR("checked") : PSTR(""), n); out[n-1] = '\0'; }
   else if (!strcmp_P(tok, PSTR("CONSUMO_W")))        { strncpy_P(out, !config.consumoEnAmperios ? PSTR("checked") : PSTR(""), n); out[n-1] = '\0'; }
-  else if (!strcmp_P(tok, PSTR("CONSUMO_VALOR")))    snprintf_P(out, n, PSTR("%.2f"), (double)config.consumoValor);
+  else if (!strcmp_P(tok, PSTR("CONSUMO_VALOR"))) {
+    // Keep the rendered value on the spinner's grid: tenths of an amp or whole
+    // watts. Otherwise an older hundredth-precision value starts invalid and
+    // the browser refuses to submit an unrelated alert change.
+    if (config.consumoEnAmperios) snprintf_P(out, n, PSTR("%.1f"), (double)config.consumoValor);
+    else                           snprintf_P(out, n, PSTR("%.0f"), (double)config.consumoValor);
+  }
   else if (!strcmp_P(tok, PSTR("SOBRE_ENABLED")))    { strncpy_P(out, config.sobretensionEnabled ? PSTR("checked") : PSTR(""), n); out[n-1] = '\0'; }
   else if (!strcmp_P(tok, PSTR("SOBRE_VALOR")))      snprintf_P(out, n, PSTR("%.1f"), (double)config.sobretensionValor);
   else if (!strcmp_P(tok, PSTR("SUB_ENABLED")))      { strncpy_P(out, config.subtensionEnabled ? PSTR("checked") : PSTR(""), n); out[n-1] = '\0'; }
